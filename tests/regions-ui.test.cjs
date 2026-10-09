@@ -105,6 +105,9 @@ test('selected subscription scope survives config-only save and failed reload pr
   await p.run('read()');
   assert.equal(p.root.querySelectorAll('.region')[0].querySelector('.name').value, 'unsaved edit');
   assert.ok(p.document.getElementById('status').textContent.includes('temporarily unavailable'));
+  assert.equal(p.document.getElementById('recovery').hidden, true);
+  await p.document.getElementById('repair').onclick();
+  assert.equal(p.root.querySelectorAll('.region')[0].querySelector('.name').value, 'unsaved edit');
 });
 test('empty entries and initial network failure expose recovery without inventing a country', async () => {
   const empty = await page(() => ({ data: { ...fixture(), entries: [] } }));
@@ -126,4 +129,43 @@ test('failed status reread retains last known state and gives per-card recovery 
   assert.ok(card.querySelector('.feedback').textContent.includes('status unavailable'));
   assert.ok(p.document.getElementById('overviewStatus').textContent.includes('9 个地区读取失败'));
   assert.equal(p.document.getElementById('statusRead').disabled, false);
+});
+test('malformed stored config is repaired only after explicit initialization and save via the actual admin API', async () => {
+  const { load, UUID } = require('./helpers/worker.cjs');
+  const s = load(), origin = 'https://fixture.invalid';
+  const store = new Map([['regions.json', '{']]);
+  const env = { ADMIN: 'fixture-password', UUID, HOST: 'fixture.invalid', OFF_LOG: 'true',
+    KV: { get: async key => store.get(key) ?? null, put: async (key, value) => store.set(key, value) } };
+  let cookie = '';
+  async function admin(url, options = {}) {
+    const request = new Request(origin + url, { ...options, headers: { Cookie: cookie, 'User-Agent': 'ui-repair-fixture', ...(options.method === 'POST' ? { Origin: origin } : {}), ...options.headers } });
+    Object.defineProperty(request, 'cf', { value: { colo: 'SJC' } });
+    return s.worker.fetch(request, env, { waitUntil() {} });
+  }
+  const login = await admin('/login', { method: 'POST', body: 'password=fixture-password' });
+  assert.equal(login.status, 200); cookie = login.headers.get('set-cookie').split(';')[0];
+  const broken = await admin('/admin/regions.json');
+  assert.equal(broken.status, 503);
+  assert.match((await broken.json()).error, /配置损坏/);
+  const p = await page(async (url, options) => { const response = await admin(url, options); return { status: response.status, data: await response.json() }; });
+  assert.equal(p.root.querySelectorAll('.region').length, 0);
+  assert.equal(store.get('regions.json'), '{');
+  assert.ok(p.calls.every(c => !c.options.method));
+  const repair = p.document.getElementById('repair');
+  assert.ok(repair, 'an explicit repair action is available after the initial malformed configuration GET');
+  assert.equal(p.document.getElementById('recovery').hidden, false);
+  await repair.onclick();
+  assert.equal(p.root.querySelectorAll('.region').length, 6);
+  assert.equal(p.document.getElementById('save').disabled, false);
+  assert.equal(store.get('regions.json'), '{', 'initializing the form never overwrites persisted config');
+  assert.ok(p.calls.every(c => !c.options.method), 'initializing repair does not request probes or save');
+  await p.document.getElementById('form').onsubmit({ preventDefault() {} });
+  const saved = JSON.parse(store.get('regions.json'));
+  assert.equal(saved.defaultRegion, 'US');
+  assert.deepEqual(saved.regions.map(r => r.code), ['US', 'JP', 'SG', 'HK', 'DE', 'GB']);
+  assert.ok(saved.regions.every(r => r.auto && r.source === 'cmliu-' + r.code.toLowerCase() + '-dns'));
+  assert.equal(p.root.querySelectorAll('.entry-card').length, 9);
+  assert.equal(p.document.getElementById('scope').options.length, 10);
+  assert.equal(p.document.getElementById('recovery').hidden, true);
+  assert.equal(p.calls.filter(c => c.options.method === 'POST').length, 1, 'only explicit save mutates the actual API');
 });
