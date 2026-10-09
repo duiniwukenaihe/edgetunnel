@@ -1,0 +1,103 @@
+name: Release after owner approval
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Exact 40-character main commit; leave empty for this main revision'
+        required: false
+        type: string
+permissions:
+  contents: read
+  actions: read
+  deployments: read
+concurrency:
+  group: naiops-cloudflare-production
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'duiniwukenaihe/edgetunnel' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Resolve immutable main revision
+        id: revision
+        env:
+          REQUESTED_SHA: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          REVISION=${REQUESTED_SHA:-$GITHUB_SHA}
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$REVISION" origin/main
+          git checkout --detach "$REVISION"
+          printf 'sha=%s\n' "$REVISION" >> "$GITHUB_OUTPUT"
+          echo "Awaiting release authorization for $REVISION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify and build reviewable release
+        env:
+          REVISION: ${{ steps.revision.outputs.sha }}
+        run: |
+          bash scripts/verify.sh
+          python3 scripts/build-release.py "$REVISION" "$RUNNER_TEMP/naiops-release/assets"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: naiops-release-${{ steps.revision.outputs.sha }}
+          path: ${{ runner.temp }}/naiops-release/
+          retention-days: 14
+      - name: Check owner-approval environment
+        if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-deploy-approval.py
+      - name: Explain disabled Cloudflare publishing
+        if: vars.CLOUDFLARE_DEPLOY_ENABLED != 'true'
+        run: echo 'Package ready. Cloudflare publishing is disabled until provider review and owner setup.' >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    needs: prepare
+    if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
+    environment:
+      name: cloudflare-production
+      url: https://us.naiops.ccwu.cc
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Recheck approval configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-deploy-approval.py
+      - name: Revalidate approved revision and build assets
+        env:
+          REVISION: ${{ needs.prepare.outputs.revision }}
+        run: |
+          bash scripts/verify.sh
+          python3 scripts/build-release.py "$REVISION" "$RUNNER_TEMP/naiops-release/assets"
+      - name: Publish approved revision to existing Pages project
+        working-directory: ${{ runner.temp }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ea812ab100c76a7c85ad7160ef51ec3a
+          REVISION: ${{ needs.prepare.outputs.revision }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Add Cloudflare token to protected environment Secrets.'; exit 1; }
+          npx --yes wrangler@4.147.0 pages deploy "$RUNNER_TEMP/naiops-release/assets" --project-name=naiops-us --branch=main --commit-hash="$REVISION" --no-bundle
+      - name: Verify live readiness and revision
+        env:
+          REVISION: ${{ needs.prepare.outputs.revision }}
+        run: python3 scripts/check-live-release.py "$REVISION"
