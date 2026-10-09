@@ -109,5 +109,11 @@ class ApprovalTests(unittest.TestCase):
         environment['can_admins_bypass'] = True
         self.assertNotEqual(self.run_guard(environment).returncode, 0)
 
+    def test_another_reviewer_cannot_replace_owner_approval(self):
+        environment = self.protected_environment()
+        environment['protection_rules'][0]['reviewers'].append(
+            {'type':'User', 'reviewer':{'login':'another-reviewer'}})
+        self.assertNotEqual(self.run_guard(environment).returncode, 0)
+
 if __name__ == '__main__':
     unittest.main()

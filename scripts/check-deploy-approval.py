@@ -10,7 +10,7 @@ def api(path):
 environment = api('/environments/' + ENVIRONMENT)
 reviewers = [reviewer for rule in environment.get('protection_rules', [])
              if rule['type'] == 'required_reviewers' for reviewer in rule['reviewers']]
-if not any(r['type'] == 'User' and r['reviewer']['login'] == 'duiniwukenaihe' for r in reviewers):
+if len(reviewers) != 1 or reviewers[0]['type'] != 'User' or reviewers[0]['reviewer']['login'] != 'duiniwukenaihe':
     raise SystemExit('Cloudflare release requires owner approval; environment is not configured')
 if environment.get('can_admins_bypass', True):
     raise SystemExit('Production approvals must not allow administrator bypass')
