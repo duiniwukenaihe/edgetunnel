@@ -59,7 +59,7 @@ jobs:
         run: python3 scripts/check-deploy-approval.py
       - name: Explain disabled Cloudflare publishing
         if: vars.CLOUDFLARE_DEPLOY_ENABLED != 'true'
-        run: echo 'Package ready. Cloudflare publishing is disabled until provider review and owner setup.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Package ready. Cloudflare publishing is disabled until owner token setup and enabling the release switch.' >> "$GITHUB_STEP_SUMMARY"
   deploy:
     needs: prepare
     if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
