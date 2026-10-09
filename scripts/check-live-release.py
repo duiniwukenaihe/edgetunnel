@@ -11,7 +11,7 @@ if not re.fullmatch('[0-9a-f]{40}', revision):
 last = 'not checked'
 for attempt in range(6):
     try:
-        request = urllib.request.Request('https://us.naiops.ccwu.cc/healthz', headers={'Cache-Control': 'no-cache'})
+        request = urllib.request.Request('https://us.naiops.ccwu.cc/healthz', headers={'Cache-Control': 'no-cache', 'User-Agent': 'naiops-release-verifier/1.0'})
         with urllib.request.urlopen(request, timeout=15) as response:
             status = json.load(response)
         if status.get('status') == 'ready' and status.get('revision') == revision:

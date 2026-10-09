@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Add Cloudflare token to protected environment Secrets.'; exit 1; }
-          npx --yes wrangler@4.147.0 pages deploy "$RUNNER_TEMP/naiops-release/assets" --project-name=naiops-us --branch=main --commit-hash="$REVISION" --no-bundle
+          npx --yes wrangler@4.147.0 pages deploy "$RUNNER_TEMP/naiops-release/assets" --project-name=naiops-us-github --branch=main --commit-hash="$REVISION" --no-bundle
       - name: Verify live readiness and revision
         env:
           REVISION: ${{ needs.prepare.outputs.revision }}
