@@ -54,7 +54,6 @@ jobs:
           path: ${{ runner.temp }}/naiops-release/
           retention-days: 14
       - name: Check owner-approval environment
-        if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/check-deploy-approval.py
