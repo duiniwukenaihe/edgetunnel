@@ -6219,7 +6219,6 @@ async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代�
 	return { 木马反代地址: null, 反代IP: 美国出口, 代理类型: 'proxyip',
 		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false };
 }
-
 const 反代协议默认端口 = { socks5: 1080, http: 80, https: 443, turn: 3478, sstp: 443 };
 function 获取代理默认端口(类型) {
 	return 反代协议默认端口[String(类型 || '').toLowerCase()] || 80;
