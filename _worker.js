@@ -32,6 +32,7 @@ export default {
 		const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
 		const 管理员密码 = env.ADMIN;
 		if (!管理员密码) return new Response('请先在 Cloudflare 设置 ADMIN。', { status: 503, headers: { 'Cache-Control': 'no-store' } });
+		if (url.pathname === '/__naiops_exit_probe') return await 处理出口回执(request, env);
 		if (url.pathname === '/healthz') return Response.json({ status: env.KV ? 'ready' : 'missing-kv', revision: 发布版本 }, { status: env.KV ? 200 : 503, headers: { 'Cache-Control': 'no-store' } });
 		const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
 		const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
@@ -41,7 +42,7 @@ export default {
 		const hosts = env.HOST ? (await 整理成数组(env.HOST)).map(h => h.toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0]) : [url.hostname];
 		const host = hosts[0];
 		const 访问路径 = url.pathname.slice(1).toLowerCase();
-		if (['admin', 'admin/regions', 'admin/regions.json'].includes(访问路径) &&
+		if (['admin', 'admin/regions', 'admin/regions.json', 'admin/exits.json'].includes(访问路径) &&
 			(!env.KV || typeof env.KV.get !== 'function' || typeof env.KV.put !== 'function'))
 			return 区域错误响应(区域错误('配置存储 KV 不可用。', 503));
 		调试日志打印 = ['1', 'true'].includes(env.DEBUG) || 调试日志打印;
@@ -76,13 +77,13 @@ export default {
 			}
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
 			let 反代上下文;
-			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env); }
+			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env, request); }
 			catch (error) { return 区域错误响应(error); }
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/叉HTTP代理
 			let 反代上下文;
-			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env); }
+			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env, request); }
 			catch (error) { return 区域错误响应(error); }
 			const 命中叉HTTP特征 = !!request.headers.get(本机标识头) || !!url.searchParams.get(本机标识键);
 			if (!命中叉HTTP特征 && contentType.startsWith('application/grpc')) {
@@ -122,7 +123,7 @@ export default {
 					// 没有cookie或cookie错误，跳转到/login页面
 					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
 					if (访问路径 === 'admin') return new Response(null, { status: 302, headers: { Location: '/admin/regions' } });
-					if (访问路径 === 'admin/regions' || 访问路径 === 'admin/regions.json') return await 处理区域管理(request, env, url, host, userID);
+					if (['admin/regions', 'admin/regions.json', 'admin/exits.json'].includes(访问路径)) return await 处理区域管理(request, env, url, host, userID);
 					if (访问路径 === 'admin/log.json') {// 读取日志内容
 						const 读取日志内容 = await env.KV.get('log.json') || '[]';
 						return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -326,11 +327,12 @@ export default {
 						MD5MD5(订阅转换后端TOKEN种子 + (当前日序号 - 1)),
 					]);
 					const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
-					if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
+					if (用户客户端请求订阅 || 订阅转换后端请求订阅) {
 						const config_JSON = await 读取config_JSON(env, host, userID, UA);
 						let 区域配置, 订阅地区;
 						try { 区域配置 = await 读取区域配置(env); 订阅地区 = url.searchParams.has('region') ? 选择区域(区域配置, url) : null; }
 						catch (error) { return 区域错误响应(error); }
+						ctx.waitUntil(获取有效区域池(env, 订阅地区 || 选择区域(区域配置, url), request).catch(() => {}));
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
 						const ua = UA.toLowerCase();
@@ -2194,7 +2196,7 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 }
 
 async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, request = null, 反代上下文 = {}, 允许木马反代 = false, 木马反代首包数据 = null, 仅建立连接 = false) {
-	const ctx反代IP = 反代上下文.反代IP || '';
+	let ctx反代IP = 反代上下文.反代IP || '', 当前验证池 = null;
 	const ctx代理类型 = 反代上下文.代理类型 !== undefined ? 反代上下文.代理类型 : null;
 	const ctx代理全局 = 反代上下文.代理全局 !== undefined ? 反代上下文.代理全局 : false;
 	const ctx代理参数 = 反代上下文.代理参数 || {};
@@ -2346,6 +2348,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 		if (所有反代数组 && 所有反代数组.length > 0) {
 			const 实际并发数 = Math.max(1, Math.floor(Number(反代并发拨号数) || 1));
 			for (let i = 0; i < 所有反代数组.length; i += 实际并发数) {
+				if (当前验证池 && 当前验证池.expiresAt <= Date.now()) throw 区域错误('出口验证已过期，请重新建立连接。', 503);
 				const 候选列表 = [];
 				for (let j = 0; j < 实际并发数 && i + j < 所有反代数组.length; j++) {
 					const 索引 = (反代数组索引 + i + j) % 所有反代数组.length;
@@ -2430,6 +2433,8 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 					}
 				} else {
 					log(`[反代连接] 代理到: ${host}:${portNum}`);
+					// Authenticated first dial and every retry require a fresh, unexpired pool.
+					if (反代上下文.获取验证出口) { 当前验证池 = await 反代上下文.获取验证出口(); ctx反代IP = 当前验证池.exits.map(item => item.address).join(','); }
 					const 所有反代数组 = await 解析地址端口(ctx反代IP, host, yourUUID);
 					newSocket = await connectProxyIP(`${特征码字典[0]}.tp1.${特征码字典[2]}.xyz`, 1, 本次首包数据, 所有反代数组, ctx反代兜底);
 				}
@@ -6159,11 +6164,16 @@ async function 请求优选API(urls, 默认端口 = '443', uid = "000000", 超�
 	return [Array.from(results), LINK数组, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-const 区域管理页面 = "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>naiops · 区域配置</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:32px auto;padding:0 20px}header,section{background:white;border:1px solid #dce3eb;border-radius:12px;padding:22px;margin-bottom:18px}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 12px;font-size:20px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer;margin-right:8px}button:disabled{opacity:.5;cursor:wait}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint{color:#526172;font-size:14px}#status{white-space:pre-wrap;min-height:26px}.error{color:#a32222}.success{color:#14683b}#links input{font:13px/1.6 monospace}.actions{position:sticky;bottom:0;background:#f4f6fa;padding:12px 0}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}nav{display:flex;gap:20px;margin-top:12px}@media(max-width:600px){.row{grid-template-columns:1fr;gap:0}main{padding:0 12px}}\n</style>\n<main>\n<header><h1>区域配置</h1><p>默认使用美国。添加你已验证的地区出口，客户端只在所选地区内切换；全部失败会断开。</p><nav><a href=\"/admin/settings\">原有设置</a><a href=\"/logout\">退出登录</a></nav></header>\n<form id=\"form\"><section><h2>地区与出口</h2><label>默认地区<select id=\"defaultRegion\" required></select></label><div id=\"regions\"></div><button type=\"button\" id=\"add\">添加地区</button><p class=\"hint\">出口按顺序逐行填写 IP:端口，IPv6 使用 [IPv6]:端口。每区最多 8 个，先填主出口，再填备用。保存不验证国家或 ChatGPT 可用性，请先通过实际代理连接检查。</p></section>\n<div class=\"actions\"><button id=\"save\" type=\"submit\" disabled>保存配置</button><button id=\"reload\" type=\"button\">重新读取</button><div id=\"status\" role=\"status\" aria-live=\"polite\">正在读取配置…</div></div></form>\n<section id=\"links\" hidden><h2>客户端订阅</h2><p class=\"hint\">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；通用客户端按其自身功能选节点。保存后更新客户端订阅。</p><label>订阅范围<select id=\"scope\"><option value=\"\">全部已配置地区</option></select></label><div id=\"addresses\"></div></section>\n</main>\n<script>\n'use strict';\nconst $=id=>document.getElementById(id);\nlet subscriptions={}, loading=false;\nfunction status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}\nfunction regionRows(){return [...document.querySelectorAll('.region')];}\nfunction updateDefaults(selected=$('defaultRegion').value){\n const defaults=$('defaultRegion');defaults.replaceChildren();\n for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}\n if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;\n}\nfunction addRegion(region={code:'',name:'',exits:[]}){\n const row=document.createElement('div');row.className='region';\n row.innerHTML='<div class=\"row\"><label>地区代码<input class=\"code\" maxlength=\"2\" pattern=\"[A-Z]{2}\" placeholder=\"US\" required></label><label>地区名称<input class=\"name\" maxlength=\"32\" placeholder=\"美国\" required></label></div><label>出口（每行一个，按主备顺序）<textarea class=\"exits\" placeholder=\"IP:端口\" required></textarea></label><button type=\"button\" class=\"remove\">删除地区</button>';\n row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\\n');\n row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();updateDefaults();});\n row.querySelector('.name').addEventListener('input',()=>updateDefaults());\n row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};\n $('regions').append(row);updateDefaults();\n}\nfunction showLinks(config){\n const scope=$('scope');const selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));\n for(const region of config.regions)scope.append(new Option(region.code+' · '+region.name,region.code));\n if(config.regions.some(r=>r.code===selected))scope.value=selected;\n $('links').hidden=false;renderLinks();\n}\nfunction renderLinks(){\n $('addresses').replaceChildren();\n for(const [type,label] of [['clash','Mihomo / Clash Meta'],['vless','VLESS / v2rayA'],['ss','SS（需 v2ray-plugin）']]){\n const address=new URL(subscriptions[type]);if($('scope').value)address.searchParams.set('region',$('scope').value);\n const field=document.createElement('label');field.textContent=label;const input=document.createElement('input');input.readOnly=true;input.value=address.href;input.onclick=()=>input.select();field.append(input);\n const copy=document.createElement('button');copy.type='button';copy.textContent='复制地址';copy.onclick=async()=>{try{await navigator.clipboard.writeText(input.value);status('已复制订阅地址。');}catch{input.select();status('请复制已选中的地址。');}};\n $('addresses').append(field,copy);\n }\n}\nasync function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}\nasync function read(){\n if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');\n try{const data=await api();subscriptions=data.subscriptions;$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');}\n catch(error){status(error.message,true);if(!regionRows().length){addRegion({code:'US',name:'美国',exits:['3.132.174.45:443','192.3.208.192:443']});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}\n finally{loading=false;$('save').disabled=false;}\n}\n$('form').onsubmit=async event=>{\n event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;\n const config={version:1,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean)}))};\n status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}\n};\n$('add').onclick=()=>addRegion();$('reload').onclick=read;$('scope').onchange=renderLinks;read();\n</script>\n</html>\n";
+const 区域管理页面 = "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>naiops · 区域配置</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:32px auto;padding:0 20px}header,section{background:white;border:1px solid #dce3eb;border-radius:12px;padding:22px;margin-bottom:18px}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 12px;font-size:20px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer;margin-right:8px}button:disabled{opacity:.5;cursor:wait}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint{color:#526172;font-size:14px}#status{white-space:pre-wrap;min-height:26px}.error{color:#a32222}.success{color:#14683b}#links input{font:13px/1.6 monospace}.actions{position:sticky;bottom:0;background:#f4f6fa;padding:12px 0}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}nav{display:flex;gap:20px;margin-top:12px}@media(max-width:600px){.row{grid-template-columns:1fr;gap:0}main{padding:0 12px}}\n</style>\n<main>\n<header><h1>区域配置</h1><p>默认使用美国，自动发现候选并验证实际出口国家。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href=\"/admin/settings\">原有设置</a><a href=\"/logout\">退出登录</a></nav></header>\n<form id=\"form\"><section><h2>地区与出口</h2><label>默认地区<select id=\"defaultRegion\" required></select></label><div id=\"regions\"></div><label>添加自动地区<select id=\"addRegionSelect\"></select></label><button type=\"button\" id=\"add\">添加地区</button><p class=\"hint\">自动获取、检测并更新各地区候选，无需填写 IP。默认先选延迟最低的有效出口，随后保留健康主出口并在故障时切换。没有通过检测的地区会显示不可用。</p></section>\n<div class=\"actions\"><button id=\"save\" type=\"submit\" disabled>保存配置</button><button id=\"reload\" type=\"button\">重新读取</button><div id=\"status\" role=\"status\" aria-live=\"polite\">正在读取配置…</div></div></form>\n<section id=\"links\" hidden><h2>客户端订阅</h2><p class=\"hint\">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；v2rayA 等通用客户端每个地区只有一个入口，区内 IP 优选在服务端自动完成。保存后更新客户端订阅。</p><label>订阅范围<select id=\"scope\"><option value=\"\">全部已配置地区</option></select></label><div id=\"addresses\"></div></section>\n<section><h2>出口检测</h2><label>查看地区<select id=\"poolRegion\"></select></label><button type=\"button\" id=\"poolRead\">读取状态</button><button type=\"button\" id=\"poolRefresh\">立即检测并刷新</button><p class=\"hint\">显示当前访问边缘的检测结果。有认证请求时每 15 分钟更新，30 分钟后过期；无请求时暂停更新。保留健康主出口，刷新不能保证 ChatGPT 登录成功。</p><div id=\"poolStatus\" role=\"status\" aria-live=\"polite\">请先读取区域配置。</div><div id=\"poolDetails\"></div></section>\n</main>\n<script>\n'use strict';\nconst $=id=>document.getElementById(id);\nlet subscriptions={}, sources=[], loading=false, poolLoading=false;\nfunction status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}\nfunction regionRows(){return [...document.querySelectorAll('.region')];}\nfunction updateDefaults(selected=$('defaultRegion').value){\n const defaults=$('defaultRegion');defaults.replaceChildren();\n for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}\n if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;\n}\nfunction addRegion(region){\n const row=document.createElement('div');row.className='region';\n row.innerHTML='<div class=\"row\"><label>地区代码<input class=\"code\" maxlength=\"2\" pattern=\"[A-Z]{2}\" placeholder=\"US\" required></label><label>地区名称<input class=\"name\" maxlength=\"32\" placeholder=\"美国\" required></label></div><label>自动发现<select class=\"auto\"><option value=\"false\">关闭 · 手动候选</option><option value=\"true\">开启 · 地区来源</option></select></label><p class=\"hint source\"></p><details><summary>高级：已有手动候选</summary><label>手动候选（每行一个）<textarea class=\"exits\" placeholder=\"自动模式无需填写\"></textarea></label></details><button type=\"button\" class=\"remove\">删除地区</button>';\n row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\\n');\n row.querySelector('.auto').value=String(!!region.auto);\n const autoState=()=>{const source=sources.find(item=>item.code===row.querySelector('.code').value);const auto=row.querySelector('.auto');auto.options[1].disabled=!source;if(!source)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动获取 '+row.querySelector('.name').value+'候选，实际国家检测通过后才启用。':'已有手动候选仍须验证实际国家。';};\n row.querySelector('.auto').onchange=autoState;autoState();\n row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();autoState();updateDefaults();});\n row.querySelector('.name').addEventListener('input',()=>updateDefaults());\n row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};\n $('regions').append(row);updateDefaults();\n}\nfunction showLinks(config){\n const scope=$('scope');const selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));\n for(const region of config.regions)scope.append(new Option(region.code+' · '+region.name,region.code));\n if(config.regions.some(r=>r.code===selected))scope.value=selected;\n const pool=$('poolRegion');const previous=pool.value;pool.replaceChildren();for(const region of config.regions)pool.append(new Option(region.code+' · '+region.name,region.code));pool.value=config.regions.some(r=>r.code===previous)?previous:config.defaultRegion;\n $('links').hidden=false;renderLinks();\n}\nfunction renderLinks(){\n $('addresses').replaceChildren();\n for(const [type,label] of [['clash','Mihomo / Clash Meta'],['vless','VLESS / v2rayA'],['ss','SS（需 v2ray-plugin）']]){\n const address=new URL(subscriptions[type]);if($('scope').value)address.searchParams.set('region',$('scope').value);\n const field=document.createElement('label');field.textContent=label;const input=document.createElement('input');input.readOnly=true;input.value=address.href;input.onclick=()=>input.select();field.append(input);\n const copy=document.createElement('button');copy.type='button';copy.textContent='复制地址';copy.onclick=async()=>{try{await navigator.clipboard.writeText(input.value);status('已复制订阅地址。');}catch{input.select();status('请复制已选中的地址。');}};\n $('addresses').append(field,copy);\n }\n}\nasync function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}\nasync function read(){\n if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');\n try{const data=await api();subscriptions=data.subscriptions;sources=data.sources;$('addRegionSelect').replaceChildren();for(const item of sources)$('addRegionSelect').append(new Option(item.name,item.code));$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');await readPool();}\n catch(error){status(error.message,true);if(!regionRows().length){sources=[{code:'US',name:'美国',source:'cmliu-us-dns'}];addRegion({code:'US',name:'美国',exits:[],auto:true});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}\n finally{loading=false;$('save').disabled=false;}\n}\n$('form').onsubmit=async event=>{\n event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;\n const config={version:3,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?sources.find(item=>item.code===row.querySelector('.code').value)?.source:null}))};\n status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}\n};\nasync function readPool(force=false){\n if(poolLoading||!$('poolRegion').value)return;poolLoading=true;$('poolRead').disabled=true;$('poolRefresh').disabled=true;$('poolStatus').className='';$('poolStatus').textContent=force?'正在发现和检测出口…':'正在读取状态…';\n const address='/admin/exits.json?region='+encodeURIComponent($('poolRegion').value);\n try{\n  const response=await fetch(address,force?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:undefined);\n  if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}\n  const data=await response.json();if(!response.ok&&!data.pool)throw new Error(data.error||'出口状态读取失败。');\n  $('poolStatus').className=data.available?'success':'error';$('poolStatus').textContent=data.error||(data.region+' · 边缘 '+data.colo+' · '+(data.available?'有有效出口':'暂无有效出口'));$('poolDetails').replaceChildren();\n  const date=value=>new Date(value).toLocaleString();\n  if(data.pool){const summary=document.createElement('p');summary.className='hint';summary.textContent='最近检测：'+date(data.pool.lastAttemptAt)+'；过期：'+date(data.pool.expiresAt);$('poolDetails').append(summary);\n   for(const [index,item] of data.pool.exits.entries()){const line=document.createElement('p');line.style.overflowWrap='anywhere';line.textContent=(index===0?'主出口':'备用')+' '+item.address+' → '+item.exitIP+' · '+item.country+' · '+item.latency+' ms · '+date(item.checkedAt);$('poolDetails').append(line);}\n   for(const failure of data.pool.failures){const line=document.createElement('p');line.className='hint';line.style.overflowWrap='anywhere';line.textContent=failure.address+'：'+failure.reason;$('poolDetails').append(line);}\n  }else $('poolDetails').textContent='尚未检测，请点击立即检测并刷新。';\n }catch(error){$('poolStatus').className='error';$('poolStatus').textContent=error.message;$('poolDetails').replaceChildren();}\n finally{poolLoading=false;$('poolRead').disabled=false;$('poolRefresh').disabled=false;}\n}\n$('poolRead').onclick=()=>readPool();$('poolRefresh').onclick=async()=>{await readPool(true);};$('poolRegion').onchange=()=>readPool();\n$('add').onclick=()=>{const region=sources.find(item=>item.code===$('addRegionSelect').value);if(!region)return;if(regionRows().some(row=>row.querySelector('.code').value===region.code)){status('该地区已经添加。',true);return;}addRegion({...region,exits:[],auto:true});};$('reload').onclick=read;$('scope').onchange=renderLinks;read();\n</script>\n</html>\n";
+const 自动地区目录 = [
+	{ code: 'US', name: '美国' }, { code: 'JP', name: '日本' }, { code: 'SG', name: '新加坡' },
+	{ code: 'HK', name: '香港' }, { code: 'DE', name: '德国' }, { code: 'GB', name: '英国' }
+].map(region => ({ ...region, source: 'cmliu-' + region.code.toLowerCase() + '-dns',
+	hostname: 'proxyip.' + region.code.toLowerCase() + '.cmliussss.net' }));
+
 function 默认区域配置() {
-	return { version: 1, defaultRegion: 'US', regions: [
-		{ code: 'US', name: '美国', exits: 美国出口.split(',') }
-	] };
+	return { version: 3, defaultRegion: 'US', regions: 自动地区目录.map(({ code, name, source }) =>
+		({ code, name, exits: [], auto: true, source })) };
 }
 
 function 区域错误(message, status = 400) {
@@ -6176,43 +6186,41 @@ function 区域错误响应(error) {
 }
 
 function 验证区域配置(input) {
-	if (!input || input.version !== 1 || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
-		throw 区域错误('需要 1–16 个区域，配置版本必须为 1。');
+	if (!input || ![1, 2, 3].includes(input.version) || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
+		throw 区域错误('需要 1–16 个区域，配置版本必须为 1、2 或 3。');
 	const codes = new Set(), names = new Set();
 	const regions = input.regions.map(region => {
 		if (!region || typeof region.code !== 'string' || !/^[A-Z]{2}$/.test(region.code) || codes.has(region.code))
 			throw 区域错误('区域代码必须是唯一的两位大写字母。');
 		const name = typeof region.name === 'string' ? region.name.trim() : '';
-		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name))
-			throw 区域错误('区域名称须唯一、非空且不超过 32 字符。');
-		if (!Array.isArray(region.exits) || region.exits.length < 1 || region.exits.length > 8)
-			throw 区域错误('每区需要 1–8 个有序出口。');
-		const exits = region.exits.map(exit => {
-			const match = typeof exit === 'string' && exit.trim().match(/^(\[[0-9a-fA-F:.]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/);
-			if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535)
-				throw 区域错误('出口须为 IPv4:端口 或 [IPv6]:端口，端口为 1–65535。');
-			let hostname = match[1];
-			if (hostname.startsWith('[')) {
-				try { hostname = new URL('http://' + hostname + '/').hostname; }
-				catch { throw 区域错误('IPv6 地址无效。'); }
-			} else if (!hostname.split('.').every(part => Number(part) <= 255 && String(Number(part)) === part)) {
-				throw 区域错误('IPv4 地址无效。');
-			}
-			return hostname + ':' + Number(match[2]);
-		});
+		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name) || ['地区选择','DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL'].includes(name) || / · (VLESS|SS)$/.test(name))
+			throw 区域错误('区域名称须唯一、非空且不超过 32 字符，不能与订阅分组或协议节点名称冲突。');
+		const auto = input.version === 1 ? false : region.auto;
+		if (typeof auto !== 'boolean' || (auto && !自动地区目录.some(item => item.code === region.code && item.source === region.source)) ||
+			(!auto && input.version !== 1 && region.source !== null)) throw 区域错误('自动来源须与地区目录匹配；手动区域的 source 必须为空。');
+		if (!Array.isArray(region.exits) || region.exits.length < (auto ? 0 : 1) || region.exits.length > 8)
+			throw 区域错误('每区最多 8 个手动候选；未启用自动来源时至少填写一个。');
+		const exits = region.exits.map(exit => 验证公共出口(typeof exit === 'string' ? exit.trim() : exit));
 		if (new Set(exits).size !== exits.length) throw 区域错误('同一区域的出口不能重复。');
 		codes.add(region.code); names.add(name);
-		return { code: region.code, name, exits };
+		return { code: region.code, name, exits, auto, source: auto ? region.source : null };
 	});
 	if (!codes.has(input.defaultRegion)) throw 区域错误('默认区域必须在已配置区域中。');
-	return { version: 1, defaultRegion: input.defaultRegion, regions };
+	return { version: 3, defaultRegion: input.defaultRegion, regions };
 }
 
 async function 读取区域配置(env) {
 	if (!env?.KV || typeof env.KV.get !== 'function') throw 区域错误('配置存储 KV 不可用。', 503);
 	try {
 		const stored = await env.KV.get('regions.json');
-		return stored === null ? 默认区域配置() : 验证区域配置(JSON.parse(stored));
+		if (stored === null) return 默认区域配置();
+		const input = JSON.parse(stored), config = 验证区域配置(input);
+		// Upgrade the earlier US-auto defaults in memory; explicit v3 removals stay removed.
+		if (input.version === 2 && config.regions.some(region => region.auto)) {
+			for (const region of 默认区域配置().regions)
+				if (config.regions.length < 16 && !config.regions.some(item => item.code === region.code || item.name === region.name)) config.regions.push(region);
+		}
+		return config;
 	} catch {
 		throw 区域错误('区域配置损坏或读取失败，请在管理面板修复。', 503);
 	}
@@ -6239,11 +6247,11 @@ function 生成区域通用订阅(config, protocol, regions = 默认区域配置
 		if (protocol === 'ss') {
 			const cipher = config.SS?.加密方式 || 'aes-128-gcm';
 			const plugin = `v2ray-plugin;mode=websocket;host=${host};path=/?enc=${cipher}&region=${region.code};tls;mux=0`;
-			return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#${region.code}-SS`;
+			return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#${encodeURIComponent(region.name)}`;
 		}
 		const params = new URLSearchParams({ security: 'tls', type: 'ws', host, sni: host,
 			path: '/?region=' + region.code, encryption: 'none', fp: 'chrome' });
-		return `vless://${uuid}@${host}:443?${params}#${region.code}-VLESS`;
+		return `vless://${uuid}@${host}:443?${params}#${encodeURIComponent(region.name)}`;
 	}).join('\n');
 }
 
@@ -6251,7 +6259,7 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 	const host = config.HOST, uuid = config.UUID, cipher = config.SS?.加密方式 || 'aes-128-gcm';
 	const proxies = [], groups = [];
 	for (const region of 订阅区域列表(regions, selected)) {
-		const vlessName = region.code + '-VLESS', ssName = region.code + '-SS';
+		const vlessName = region.name + ' · VLESS', ssName = region.name + ' · SS';
 		proxies.push(
 			{ name: vlessName, type: 'vless', server: host, port: 443, uuid, tls: true,
 				udp: false, servername: host, network: 'ws', 'client-fingerprint': 'chrome',
@@ -6260,7 +6268,7 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 				udp: false, plugin: 'v2ray-plugin', 'plugin-opts': { mode: 'websocket', tls: true,
 					host, path: '/?enc=' + cipher + '&region=' + region.code, mux: false } }
 		);
-		groups.push({ name: region.code + ' · ' + region.name + '自动切换', type: 'fallback',
+		groups.push({ name: region.name, type: 'fallback',
 			proxies: [vlessName, ssName], url: 'https://www.cloudflare.com/cdn-cgi/trace',
 			'expected-status': 200, interval: 300, lazy: false });
 	}
@@ -6269,16 +6277,38 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 		rules: ['MATCH,地区选择'] }, null, 2);
 }
 
-async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env) {
-	// 旧签名仍用于独立策略调用；所有真实代理入口明确传入 env。
-	const config = env === undefined ? 默认区域配置() : await 读取区域配置(env);
+async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env, request) {
+	const config = await 读取区域配置(env);
 	const region = 选择区域(config, url);
 	return { 木马反代地址: null, 反代IP: region.exits.join(','), 代理类型: 'proxyip',
-		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false };
+		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false,
+		获取验证出口: () => 获取有效区域池(env, region, request || new Request(url.href)) };
 }
 
 async function 处理区域管理(request, env, url, host, uuid) {
 	const headers = { 'Cache-Control': 'no-store' };
+	if (request.method === 'POST' && (request.headers.get('Origin') !== url.origin ||
+		!/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || '')))
+		return 区域错误响应(区域错误('保存或刷新需要同源 JSON 请求。', 403));
+	if (url.pathname === '/admin/exits.json') {
+		if (!['GET', 'POST'].includes(request.method)) return new Response('仅支持 GET 或 POST。', { status: 405, headers });
+		try {
+			const region = 选择区域(await 读取区域配置(env), url);
+			let refreshError;
+			if (request.method === 'POST') {
+				let body;
+				try { body = await request.json(); } catch { throw 区域错误('JSON 格式无效。'); }
+				if (!body || Array.isArray(body) || Object.keys(body).length) throw 区域错误('刷新请求须为空 JSON 对象。');
+				try { await 获取有效区域池(env, region, request, true); }
+				catch (error) { if (error.status !== 503) throw error; refreshError = error; }
+			}
+			const { entry } = await 读取出口池状态(env, region, request);
+			return Response.json({ region: region.code, colo: request.cf?.colo || 'unknown', pool: entry.pool,
+				...(refreshError ? { error: refreshError.message } : {}),
+				available: !!entry.pool?.exits.length && entry.pool.expiresAt > Date.now(),
+				refreshSeconds: 900, expirySeconds: 1800 }, { status: refreshError ? 503 : 200, headers });
+		} catch (error) { return 区域错误响应(error); }
+	}
 	if (url.pathname === '/admin/regions') {
 		if (request.method !== 'GET') return new Response('仅支持 GET。', { status: 405, headers });
 		return new Response(区域管理页面, { headers: { ...headers, 'Content-Type': 'text/html;charset=utf-8',
@@ -6286,8 +6316,6 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			'X-Content-Type-Options': 'nosniff' } });
 	}
 	if (request.method === 'POST') {
-		if (request.headers.get('Origin') !== url.origin || !/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || ''))
-			return 区域错误响应(区域错误('保存需要同源 JSON 请求。', 403));
 		let config;
 		try { config = 验证区域配置(await request.json()); }
 		catch (error) { return 区域错误响应(区域错误(error instanceof SyntaxError ? 'JSON 格式无效。' : error.message)); }
@@ -6304,9 +6332,302 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			if (protocol) address.searchParams.set('protocol', protocol);
 			return address.href;
 		};
-		return Response.json({ config, subscriptions: { clash: subscription('clash'),
+		return Response.json({ config, sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
 			vless: subscription('mixed', 'vless'), ss: subscription('mixed', 'ss') } }, { headers });
 	} catch (error) { return 区域错误响应(error); }
+}
+
+// This receipt authenticates observed egress, independently of the probe's TLS transport.
+// Only a random nonce is sent through candidates. The independent random key stays in KV.
+const 出口回执密钥名称 = '__naiops_exit_receipt_key_v1';
+function 出口回执内容(receipt) {
+	return JSON.stringify([1, receipt.nonce, receipt.hostname, receipt.revision, receipt.issuedAt, receipt.ip, receipt.country]);
+}
+
+async function 出口回执密钥(env) {
+	let value;
+	try { value = await env.KV.get(出口回执密钥名称); } catch { throw 区域错误('检测密钥读取失败。', 503); }
+	if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) throw 区域错误('检测密钥尚未初始化或格式无效。', 503);
+	const material = Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
+	return crypto.subtle.importKey('raw', material,
+		{ name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function 确保出口回执密钥(env) {
+	// Provision once during authorized deployment; KV has no atomic create-if-absent.
+	return 出口回执密钥(env);
+}
+
+async function 处理出口回执(request, env) {
+	try {
+		if (request.method !== 'GET') throw 区域错误('仅支持 GET。', 405);
+		const url = new URL(request.url), values = url.searchParams.getAll('nonce');
+		if (values.length !== 1 || !/^[0-9a-f]{32}$/.test(values[0])) throw 区域错误('检测 nonce 无效。');
+		const ip = request.headers.get('CF-Connecting-IP'), country = request.cf?.country;
+		if (request.headers.has('CF-Worker')) throw 区域错误('Worker 子请求不能作为出口证据。', 503);
+		if (!ip || !/^[A-Z]{2}$/.test(country || '') || country === 'XX') throw 区域错误('边缘出口信息不可用。', 503);
+		try {
+			const canonical = 验证公共出口((ip.includes(':') ? '[' + ip + ']' : ip) + ':443');
+			if (canonical === '[2a06:98c0:3600::103]:443') throw new Error('synthetic Worker address');
+		}
+		catch { throw 区域错误('边缘出口地址无效。', 503); }
+		const receipt = { version: 1, nonce: values[0], hostname: url.hostname, revision: 发布版本,
+			issuedAt: Date.now(), ip, country };
+		const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await 出口回执密钥(env), new TextEncoder().encode(出口回执内容(receipt))));
+		receipt.signature = Array.from(mac, b => b.toString(16).padStart(2, '0')).join('');
+		return Response.json(receipt, { headers: { 'Cache-Control': 'no-store' } });
+	} catch (error) { return 区域错误响应(error); }
+}
+
+async function 验证出口回执(receipt, env, request, nonce, code) {
+	if (!receipt || receipt.version !== 1 || receipt.nonce !== nonce || receipt.hostname !== new URL(request.url).hostname ||
+		receipt.revision !== 发布版本 || !Number.isFinite(receipt.issuedAt) || receipt.issuedAt < Date.now() - 10000 ||
+		receipt.issuedAt > Date.now() + 2000 || typeof receipt.signature !== 'string' || !/^[0-9a-f]{64}$/.test(receipt.signature))
+		throw 区域错误('出口签名回执无效或过期。', 503);
+	const signature = Uint8Array.from(receipt.signature.match(/../g), byte => parseInt(byte, 16));
+	if (!await crypto.subtle.verify('HMAC', await 出口回执密钥(env), signature, new TextEncoder().encode(出口回执内容(receipt))))
+		throw Object.assign(区域错误('出口回执签名不匹配。', 503), { invalidatesExit: true });
+	if (receipt.country !== code) throw Object.assign(区域错误('实际出口国家不符合所选区域。', 503), { invalidatesExit: true });
+	验证公共出口((receipt.ip?.includes(':') ? '[' + receipt.ip + ']' : receipt.ip) + ':443');
+	return { exitIP: receipt.ip, country: receipt.country, proofVerified: true };
+}
+
+function 解析候选回执响应(text) {
+	const split = text.indexOf('\r\n\r\n');
+	if (split < 0 || split > 4096 || text.length > 8192 || !/^HTTP\/1\.[01] 200(?: |\r\n)/.test(text))
+		throw 区域错误('出口回执未返回有效 HTTP 200。', 503);
+	const headers = text.slice(0, split), lengths = [...headers.matchAll(/\r\nContent-Length:\s*(\d+)\s*(?=\r\n|$)/gi)];
+	const encodings = [...headers.matchAll(/\r\nTransfer-Encoding:\s*([^\r\n]+)/gi)];
+	if (!/\r\nContent-Type:\s*application\/json(?:\s*;[^\r\n]*)?(?=\r\n|$)/i.test(headers) ||
+		lengths.length > 1 || encodings.length > 1 || (encodings.length && (lengths.length || encodings[0][1].trim().toLowerCase() !== 'chunked')))
+		throw 区域错误('出口回执响应格式无效。', 503);
+	let body = text.slice(split + 4);
+	if (encodings.length) {
+		let offset = 0, plain = '', ended = false;
+		while (offset < body.length) {
+			const end = body.indexOf('\r\n', offset), sizeText = body.slice(offset, end);
+			if (end < 0 || !/^[0-9a-f]{1,6}$/i.test(sizeText)) throw 区域错误('出口回执分块无效。', 503);
+			const size = parseInt(sizeText, 16); offset = end + 2;
+			if (body.slice(offset + size, offset + size + 2) !== '\r\n') throw 区域错误('出口回执分块不完整。', 503);
+			if (size === 0) { ended = offset + 2 === body.length; break; }
+			plain += body.slice(offset, offset + size); offset += size + 2;
+		}
+		if (!ended) throw 区域错误('出口回执缺少结束块。', 503);
+		body = plain;
+	} else if (lengths.length && Number(lengths[0][1]) !== new TextEncoder().encode(body).byteLength)
+		throw 区域错误('出口回执长度不符。', 503);
+	try { return JSON.parse(body); } catch { throw 区域错误('出口回执不是有效 JSON。', 503); }
+}
+
+async function 读取候选回执(address, hostname, nonce, signal) {
+	let raw, socket, timer, finished = false, rejectAbort;
+	const close = () => { try { raw?.close()?.catch(() => {}); } catch {} };
+	const abort = () => { finished = true; close(); rejectAbort?.(new Error('检测已取消。')); };
+	try {
+		验证公共出口(address);
+		if (signal?.aborted) throw new Error('检测已取消。');
+		signal?.addEventListener('abort', abort, { once: true });
+		return await Promise.race([
+			(async () => {
+				raw = connect({ hostname: address.slice(0, -4).replace(/^\[|\]$/g, ''), port: 443 });
+				raw.closed?.catch(() => {}); await raw.opened;
+				if (finished || signal?.aborted) throw new Error('检测已取消。');
+				socket = new TlsClient(raw, { serverName: hostname, tls12: false, allowChacha: false, timeout: 0 });
+				await socket.handshake();
+				if (finished || signal?.aborted) throw new Error('检测已取消。');
+				await socket.write(new TextEncoder().encode(`GET /__naiops_exit_probe?nonce=${nonce} HTTP/1.0\r\nHost: ${hostname}\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`));
+				let size = 0, text = ''; const decoder = new TextDecoder();
+				for (;;) {
+					const value = await socket.read(); if (!value) break;
+					size += value.byteLength; if (size > 8192) throw new Error('出口回执响应超过限制。');
+					text += decoder.decode(value, { stream: true });
+				}
+				return 解析候选回执响应(text + decoder.decode());
+			})(),
+			new Promise((_, reject) => { rejectAbort = reject; timer = setTimeout(() => { finished = true; close(); reject(new Error('出口回执检测超时。')); }, 4000); })
+		]);
+	} finally { finished = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); close(); }
+}
+
+const 出口刷新间隔 = 15 * 60 * 1000, 出口有效期 = 30 * 60 * 1000;
+const 区域池实例状态 = new WeakMap();
+
+function 验证公共出口(value) {
+	const match = typeof value === 'string' && value.match(/^(\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):443$/);
+	if (!match) throw 区域错误('候选出口必须是公共 IP:443。');
+	let host = match[1];
+	if (host.startsWith('[')) {
+		try { host = new URL('http://' + host).hostname; } catch { throw 区域错误('IPv6 地址无效。'); }
+		const first = parseInt(host.slice(1).split(':')[0], 16);
+		// Global unicast only; exclude documentation, transition and special-purpose space.
+		const second = parseInt(host.slice(1).split(':')[1] || '0', 16);
+		if (!(first >= 0x2000 && first <= 0x3ffe) || (first === 0x2001 && (second < 0x200 || second === 0xdb8)) || first === 0x2002)
+			throw 区域错误('IPv6 候选必须是公共单播地址。');
+	} else {
+		const parts = host.split('.').map(Number), [a, b, c] = parts;
+		if (parts.some((part, i) => part > 255 || String(part) !== host.split('.')[i]) ||
+			a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+			(a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || (b === 88 && c === 99) || (b === 0 && (c === 0 || c === 2)))) ||
+			(a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) || (a === 203 && b === 0 && c === 113))
+			throw 区域错误('IPv4 候选必须是公共单播地址。');
+	}
+	return host + ':443';
+}
+
+async function 探测区域出口(address, code, signal, env, request) {
+	const controller = new AbortController(), abort = () => controller.abort();
+	const timer = setTimeout(abort, 4000); signal?.addEventListener('abort', abort, { once: true });
+	try {
+		if (signal?.aborted) controller.abort();
+		const start = performance.now();
+		const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+		const receipt = await 读取候选回执(address, new URL(request.url).hostname, nonce, controller.signal);
+		const trace = await 验证出口回执(receipt, env, request, nonce, code);
+		const latency = Math.round(performance.now() - start);
+		return { address, ...trace, latency, checkedAt: Date.now() };
+	} finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.abort(); }
+}
+
+async function 有界检测JSON(response) {
+	if (!response.ok || !response.body) throw new Error('发现来源不可用。');
+	const reader = response.body.getReader(); let size = 0, text = ''; const decoder = new TextDecoder();
+	try {
+		for (;;) {
+			const { done, value } = await reader.read(); if (done) break;
+			size += value.byteLength; if (size > 32768) throw new Error('发现来源响应过大。');
+			text += decoder.decode(value, { stream: true });
+		}
+		return JSON.parse(text + decoder.decode());
+	} finally { try { await reader.cancel(); } catch {} reader.releaseLock(); }
+}
+
+async function 发现区域候选(region, signal, failures = []) {
+	const results = new Set(region.exits.map(验证公共出口));
+	if (region.auto) {
+		const source = 自动地区目录.find(item => item.code === region.code && item.source === region.source);
+		if (!source) throw 区域错误('该区域没有受支持的自动来源。');
+		for (const type of ['A', 'AAAA']) {
+			if (signal?.aborted) throw new Error('出口发现已取消。');
+			const url = new URL('https://cloudflare-dns.com/dns-query');
+			url.searchParams.set('name', source.hostname); url.searchParams.set('type', type);
+			const controller = new AbortController(), abort = () => controller.abort();
+			const timer = setTimeout(abort, 3000); signal?.addEventListener('abort', abort, { once: true });
+			try {
+				if (signal?.aborted) controller.abort();
+				const data = await 有界检测JSON(await fetch(url.href, { headers: { Accept: 'application/dns-json' }, signal: controller.signal }));
+				if (signal?.aborted) throw new Error('出口发现已取消。');
+				if (data.Status !== 0 || !Array.isArray(data.Answer)) throw new Error('DNS 没有有效应答。');
+				for (const item of data.Answer) {
+					if (results.size >= 32) break;
+					if (![1, 28].includes(item.type)) continue;
+					try { results.add(验证公共出口((item.type === 28 ? '[' + item.data + ']' : item.data) + ':443')); } catch {}
+				}
+			} catch (error) { if (signal?.aborted) throw error; failures.push({ address: 'source-' + type, reason: String(error.message).slice(0, 180) }); }
+			finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+		}
+	}
+	return Array.from(results).slice(0, 32);
+}
+
+async function 区域池缓存键(region, request) {
+	const material = JSON.stringify([发布版本, new URL(request.url).hostname, request.cf?.colo || 'unknown', region.code, region.exits, !!region.auto, region.source || null]);
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material)));
+	return 'exit-pool:v2:' + region.code + ':' + Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function 验证出口池(pool, code) {
+	if (!pool || pool.version !== 1 || pool.region !== code || !Array.isArray(pool.exits) || pool.exits.length > 8 ||
+		!Array.isArray(pool.failures) || pool.failures.length > 8 || !Number.isFinite(pool.lastAttemptAt) ||
+		!Number.isFinite(pool.expiresAt) || !Number.isFinite(pool.nextRefreshAt) || pool.lastAttemptAt > Date.now() + 10000 ||
+		pool.nextRefreshAt > pool.lastAttemptAt + 出口刷新间隔 || pool.expiresAt > pool.lastAttemptAt + 出口有效期 + 12000 ||
+		new Set(pool.exits.map(item => item.address)).size !== pool.exits.length)
+		throw 区域错误('出口检测缓存损坏，请立即刷新修复。', 503);
+	for (const item of pool.exits) {
+		验证公共出口(item.address);
+		验证公共出口((item.exitIP?.includes(':') ? '[' + item.exitIP + ']' : item.exitIP) + ':443');
+		if (item.country !== code || item.proofVerified !== true || !Number.isFinite(item.latency) || item.latency < 0 || !Number.isFinite(item.checkedAt) ||
+			item.checkedAt <= 0 || item.checkedAt > Date.now() + 10000 || pool.expiresAt > item.checkedAt + 出口有效期)
+			throw 区域错误('出口检测缓存包含未经有效验证的结果。', 503);
+	}
+	return pool;
+}
+
+async function 读取出口池状态(env, region, request, repair = false) {
+	if (!env?.KV?.get || !env.KV.put) throw 区域错误('配置存储 KV 不可用。', 503);
+	let state = 区域池实例状态.get(env.KV);
+	if (!state) { state = new Map(); 区域池实例状态.set(env.KV, state); }
+	const key = await 区域池缓存键(region, request);
+	if (!state.has(key)) {
+		if (state.size >= 32) { for (const [oldKey, oldEntry] of state) { if (!oldEntry.pending) { state.delete(oldKey); break; } } }
+		const entry = { pool: null, pending: null };
+		entry.loaded = (async () => {
+			let value;
+			try { value = await env.KV.get(key); }
+			catch { state.delete(key); throw 区域错误('出口缓存读取失败。', 503); }
+			try { entry.pool = value === null ? null : 验证出口池(JSON.parse(value), region.code); }
+			catch { if (!repair) { state.delete(key); throw 区域错误('出口缓存损坏，请立即刷新修复。', 503); } }
+		})(); state.set(key, entry);
+	}
+	const entry = state.get(key); await entry.loaded;
+	return { key, entry };
+}
+
+async function 刷新区域出口池(env, region, request, key, entry) {
+	const old = entry.pool, now = Date.now(), controller = new AbortController();
+	let timer;
+	const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+		controller.abort(); reject(new Error('出口发现或检测超过 12 秒限制。'));
+	}, 12000); });
+	const failures = [], checked = [];
+	let candidates = [], cursor = Number.isInteger(old?.cursor) ? old.cursor : 0;
+	try {
+		await Promise.race([确保出口回执密钥(env), deadline]);
+		candidates = await Promise.race([发现区域候选(region, controller.signal, failures), deadline]);
+		const primary = old?.exits[0]?.address;
+		const remaining = candidates.filter(address => address !== primary);
+		const selected = primary ? [primary] : [];
+		const count = Math.min(4 - selected.length, remaining.length);
+		for (let i = 0; i < count; i++) selected.push(remaining[(cursor + i) % remaining.length]);
+		cursor = remaining.length ? (cursor + selected.length - (primary ? 1 : 0)) % remaining.length : 0;
+		for (let offset = 0; offset < selected.length && !controller.signal.aborted; offset += 2) {
+			await Promise.race([Promise.all(selected.slice(offset, offset + 2).map(async address => {
+				try {
+					const result = await 探测区域出口(address, region.code, controller.signal, env, request);
+					if (controller.signal.aborted) return;
+					验证出口池({ version: 1, region: region.code, exits: [result], failures: [], lastAttemptAt: Date.now(), expiresAt: result.checkedAt + 出口有效期, nextRefreshAt: Date.now() }, region.code);
+					checked.push(result);
+				} catch (error) { if (!controller.signal.aborted) failures.push({ address, reason: String(error.message).slice(0, 180),
+					invalidatesExit: error.invalidatesExit === true || /certificate|hostname mismatch/i.test(error.message) }); }
+			})), deadline]);
+		}
+	} catch (error) { failures.push({ address: 'source', reason: String(error.message).slice(0, 180) }); }
+	finally { clearTimeout(timer); controller.abort(); }
+	const order = old?.exits[0]?.address;
+	checked.sort((a, b) => (a.address === order ? -1 : b.address === order ? 1 : a.latency - b.latency));
+	const retained = old?.exits.filter(item => !failures.some(failure => failure.address === item.address && failure.invalidatesExit)) || [];
+	// Revocation must survive a KV write outage; newly accepted exits still require persistence.
+	if (old && retained.length !== old.exits.length) entry.pool = { ...old, exits: retained, failures,
+		expiresAt: retained.length ? old.expiresAt : now, nextRefreshAt: now };
+	const pool = checked.length ? { version: 1, region: region.code, exits: checked.slice(0, 8), failures, cursor,
+		lastAttemptAt: now, nextRefreshAt: now + 出口刷新间隔, expiresAt: Math.min(...checked.map(item => item.checkedAt)) + 出口有效期 }
+		: old && old.expiresAt > Date.now() && retained.length ? { ...old, exits: retained, failures, cursor, lastAttemptAt: now, nextRefreshAt: now + 60000 }
+			: { version: 1, region: region.code, exits: [], failures, cursor, lastAttemptAt: now, nextRefreshAt: now + 60000, expiresAt: now };
+	try { await env.KV.put(key, JSON.stringify(pool), { expirationTtl: 3600 }); }
+	catch { throw 区域错误('出口检测结果保存失败。', 503); }
+	entry.pool = pool; return pool;
+}
+
+async function 获取有效区域池(env, region, request, force = false) {
+	const { key, entry } = await 读取出口池状态(env, region, request, force);
+	const now = Date.now(), old = entry.pool;
+	if (force && old && now - old.lastAttemptAt < 60000) throw 区域错误('刷新操作过于频繁，请稍后再试。', 429);
+	if (!entry.pending && (force || !old || now >= old.nextRefreshAt)) {
+		entry.pending = 刷新区域出口池(env, region, request, key, entry);
+		entry.pending.finally(() => { entry.pending = null; }).catch(() => {});
+	}
+	const pool = entry.pending ? await entry.pending : entry.pool;
+	if (!pool || !pool.exits.length || pool.expiresAt <= Date.now()) throw 区域错误('当前区域没有未过期的有效出口，请稍后刷新。', 503);
+	return pool;
 }
 const 反代协议默认端口 = { socks5: 1080, http: 80, https: 443, turn: 3478, sstp: 443 };
 function 获取代理默认端口(类型) {

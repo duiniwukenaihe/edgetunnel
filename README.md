@@ -1,11 +1,14 @@
-# naiops 区域主备定制版
+# naiops 自动区域出口定制版
 
-基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，支持 VLESS、SS 和 Mihomo/Clash Meta。默认美国；管理员在我们的面板维护其他地区及有序出口池。代理只在所选地区内尝试主备，全部失败断开，不直连、不跨区。
+基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，支持 VLESS、SS 和 Mihomo/Clash Meta。默认美国，支持自动发现候选、检测真实国家与过期更新；默认自动发现美国、日本、新加坡、香港、德国、英国候选，用户只选择地区，无需维护 IP。代理只使用所选地区的有效检测结果，全部失败断开，不直连、不跨区。
+
+**六地区预览均通过云端国家检测与 VLESS/SS 共 12 项真实代理验收。** 当前正式部署版本请以 `/healthz` 的 revision 为准。 检测以本项目签名回执认证观测国家。详见[自动出口验收记录](docs/自动出口验收.md)。
 
 [![CI](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml)
 
 - [与上游的差异](docs/上游差异.md)
 - [同步、测试与手动发布](docs/自动同步与授权发布.md)
+- [自动出口设计](docs/superpowers/specs/2026-10-09-auto-us-design.md)
 - [区域设计](docs/superpowers/specs/2026-10-09-region-panel-design.md)
 - [上游版本锁](upstream/version.json)
 
@@ -13,24 +16,29 @@
 
 新版本发布后打开 `/login`，使用 Cloudflare 中已有 ADMIN 密码登录；`/admin` 会进入我们的 `/admin/regions` 页面。原管理页面保留在 `/admin/settings`。
 
-1. 初始只有 US 美国：`3.132.174.45:443` 为主出口，`192.3.208.192:443` 为备用。
-2. 添加地区，填写唯一的两位大写代码、名称及真实出口。出口每行一个，按主备顺序填写，IPv6 用 `[IPv6]:端口`。每区 1–8 个出口，最多 16 个地区。
-3. 可以修改默认地区、出口顺序或删除地区。默认地区必须存在，至少保留一个地区。
+1. 初始提供美国、日本、新加坡、香港、德国、英国六个自动地区，默认美国。DNS 提供动态候选，域名里的国家代码不作为国家证明，每个候选仍须实测。
+2. 日常只需选择默认地区、启用或删除目录中的地区。高级设置保留旧手动配置兼容能力，自动模式无需填写 IP；每区最多 8 个额外手动候选，最多 16 个地区。已有版本 2 自动配置在内存补齐目录，保存为版本 3 后尊重已删除地区；版本 1 手动配置不自动改写。
+3. 可以修改默认地区或删除地区。默认地区必须存在，至少保留一个地区。
 4. 保存后更新客户端订阅。KV 在不同机房的传播可能需要约一分钟；已有连接继续使用原出口。删除地区后，旧节点会被拒绝，不会自动改走其他地区。
-5. 在同一代理客户端打开 `https://www.cloudflare.com/cdn-cgi/trace`，检查 `loc` 和实际 IP，再验证需要的网站与 ChatGPT 登录。
+5. 保存后在“出口检测”选择地区，读取当前边缘的状态或立即刷新，查看真实出口国家、IP、检测时间与失败原因。发现与探测最多约 12 秒，KV 保存另计；强制刷新间隔至少 60 秒。
+6. 在同一代理客户端打开 `https://www.cloudflare.com/cdn-cgi/trace`，检查 `loc` 和实际 IP，再验证需要的网站与 ChatGPT 登录。
 
 配置单独保存到已有 KV 的 `regions.json`，不改变 ADMIN、HOST、UUID 或旧 `config.json`。未保存时默认美国；损坏配置或存储不可用时拒绝代理，不静默回落。页面提示读取错误时可以编辑并保存有效配置修复。修改地区配置不需要重新发布代码。
 
-地区代码是管理员标记，保存不证明出口在该国家。初始候选曾实测为美国，但免费出口的国家、可用性和信誉可能改变。本分支不进行持续地理检测、全网自动优选，也不保证 ChatGPT 登录成功。HTTP 403 不会触发服务器换 IP。
+保存地区配置只增加候选，不能直接启用出口。认证后的代理新拨号、订阅请求和管理刷新可以触发检测：固定 DNS 来源与手动候选去重，最多 32 个候选，每轮检测最多 4 个、并发 2。通过候选访问当前项目的固定签名回执接口，实际国家必须匹配所选地区。签名、每次随机 nonce、域名、发布 SHA 和时效均需正确；TLS 握手或未签名国家声明不能直接启用出口。首次按检测延迟优选，后续优先保留健康主出口，减少登录期间频繁换 IP；国家变化立即剔除。
+
+有认证请求时每 15 分钟更新，证据 30 分钟过期；无请求时暂停。临时网络故障可保留仍有效的旧证据，但不延长检测时间或到期时间。每次重新拨号与重试都会重新检查有效期，已有 TCP 连接继续。缓存独立于配置，按版本、域名、Cloudflare 边缘、地区及候选配置隔离；同一实例合并并发刷新，KV 不提供分布式锁。本分支不做全网扫描，也不保证 ChatGPT 登录成功，HTTP 403 不会触发服务器换 IP。
 
 ## 客户端与自动切换
+
+地区名显示为“美国”“日本”等，不导出 CF 编号或底层候选列表。Mihomo 的“地区选择”只列地区组，各组保留 VLESS/SS 协议容错。v2rayA 只需导入 VLESS 订阅并选择地区入口，无需为本服务配置多 IP 分组。
 
 面板提供含私密 token 的完整订阅地址，可选择全部地区或单一地区。不要公开地址、UUID 或密码。
 
 | 客户端 | 参数 | 行为 |
 | --- | --- | --- |
 | Mihomo / Clash Meta | target=clash，可选 region=US | “地区选择”默认排在首位的是默认地区；每区 VLESS 优先、SS 备用 |
-| v2rayA / VLESS 客户端 | target=mixed&protocol=vless，可选 region=US | 导入订阅并选择对应地区节点，开启客户端代理 |
+| v2rayA / VLESS 客户端 | target=mixed&protocol=vless，可选 region=US | 每个地区一个中文入口，区内候选优选与故障切换由服务端完成 |
 | SS 客户端 | target=mixed&protocol=ss，可选 region=US | 需支持 v2ray-plugin WebSocket + TLS |
 
 未指定订阅 region 时包含全部配置地区，默认地区排第一；指定后只包含该地区。节点路径包含固定 region，所以更改默认地区不会悄悄改变已有节点的地区。未指定 region 的旧代理连接使用当前默认地区；未知、空或重复参数返回 400。
@@ -64,7 +72,7 @@ ADMIN 不是 SS 节点密码。UUID/KEY 可用于节点身份派生，但不能�
 
 `main` 是我们的定制版本。每天北京时间约 08:20 自动获取锁定来源的上游更新、应用本地策略并测试，通过后原子更新 upstream-candidate 和 main；不强制推送，不触发发布。计划任务可能延后。不要使用 Sync fork 将整份上游覆盖到定制 main。
 
-策略在 [policy/regions.js](policy/regions.js)，页面在 [policy/regions.html](policy/regions.html)，生成入口保留原名 [scripts/apply-us-policy.py](scripts/apply-us-policy.py)。修改这些来源文件后：
+区域策略在 [policy/regions.js](policy/regions.js)，发现与验证逻辑在 [policy/auto-exits.js](policy/auto-exits.js)，页面在 [policy/regions.html](policy/regions.html)，生成入口保留原名 [scripts/apply-us-policy.py](scripts/apply-us-policy.py)。修改这些来源文件后：
 
 ```sh
 python3 scripts/apply-us-policy.py upstream/_worker.js _worker.js
@@ -75,9 +83,17 @@ bash scripts/verify.sh
 
 ## 验证范围
 
-本次区域版本通过来源与生成一致性、语法检查及区域/认证/存储/订阅/代理/发布回归。GitHub CI 结果以 Actions 为准。地区页面的本地浏览器验证不等于 Cloudflare 上线验证。
+自动出口版本已通过来源与生成一致性、语法检查和 15 项 Python、66 项 Node 回归，包括真实协议解析器的认证拒绝、国家变化、重试过期、缓存隔离、限流和关闭行为。Socket 边界模拟不代表真实免费出口可用性。
 
-2026-10-09，线上仍是此前固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，真实 VLESS/SS 曾通过 TLS、HTTP 200 和 US 出口检查。本次区域版本需由你批准发布后才能在域名上使用。真实客户端故障切换与 ChatGPT 账号登录未验收；无登录程序探测曾返回 403。
+`tests/native-tls-runtime.cjs` 使用独立 workerd 和本地 TLS 1.3 服务，运行真实上游 TLS 代码与生产回执校验：正确签名美国成功，非美国、伪造、过期、旧 nonce、错误域名及版本拒绝。测试仅映射 Socket 目标，不连接真实免费出口。回执以 现有 KV 中独立随机 32 字节 HMAC 密钥认证；不依赖探测传输的证书认证，探测只发送非秘密随机值。真实客户端的目标 TLS 校验保持原样。运行方式：
+
+```sh
+WORKERD_BINARY=/path/to/workerd node tests/native-tls-runtime.cjs /external/path/report.json
+```
+
+报告中的 `safetyTestsPassed` 与 `runtimeReady` 必须分别检查；前者为 true 不代表后者为 true。云端必须另外验证签名回执及真实 VLESS/SS 美国出口。原生域名参数问题参考 [Cloudflare issue](https://github.com/cloudflare/workerd/issues/6903)；签名回执设计见[检测修复设计](docs/superpowers/specs/2026-10-09-cloud-exit-proof-design.md)。
+
+上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本仅在同一项目的测试预览验收：health/login/区域状态和实际 KV 保存通过，4 个候选原生 TLS 握手均失败，VLESS/SS 连接随后关闭；生产版本与域名已复核保持原版本。现有授权已恢复，浏览器会话检查仍超时。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
 
 ## 来源与许可证
 

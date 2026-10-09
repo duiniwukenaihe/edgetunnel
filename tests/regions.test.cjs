@@ -1,10 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { load, socket, UUID, POOL } = require('./helpers/worker.cjs');
+const { load, socket, UUID, POOL, seedVerifiedPool } = require('./helpers/worker.cjs');
 const ORIGIN = 'https://us.naiops.ccwu.cc';
 const regions = () => ({ version: 1, defaultRegion: 'US', regions: [
   { code: 'US', name: '美国', exits: POOL.map(ip => ip + ':443') },
-  { code: 'JP', name: '日本', exits: ['198.51.100.1:443', '198.51.100.2:443'] }
+  { code: 'JP', name: '日本', exits: ['8.8.8.8:443', '9.9.9.9:443'] }
 ] });
 function storage(config) {
   const store = new Map(config === undefined ? [] : [['regions.json', JSON.stringify(config)]]);
@@ -25,11 +25,11 @@ async function session(config) {
   cookie = login.headers.get('set-cookie').split(';')[0];
   return { s, env, store, request };
 }
-test('missing region KV uses the existing US pool without writing defaults', async () => {
+test('missing region KV uses automatic regional defaults without writing configuration', async () => {
   const { s, env, store } = await session();
   const config = await s.读取区域配置(env);
   assert.equal(config.defaultRegion, 'US');
-  assert.deepEqual(Array.from(config.regions[0].exits), POOL.map(ip => ip + ':443'));
+  assert.equal(config.regions[0].exits.length, 0);
   assert.equal(store.has('regions.json'), false);
 });
 test('real proxy endpoint selects configured JP and ignores arbitrary overrides', async () => {
@@ -40,7 +40,7 @@ test('real proxy endpoint selects configured JP and ignores arbitrary overrides'
   const response = await s.worker.fetch(req, env, {});
   assert.equal(response.status, 200);
   const context = await response.json();
-  assert.equal(context.反代IP, '198.51.100.1:443,198.51.100.2:443');
+  assert.equal(context.反代IP, '8.8.8.8:443,9.9.9.9:443');
   assert.equal(context.反代兜底, false);
   assert.equal(context.代理全局, true);
 });
@@ -71,18 +71,19 @@ test('concurrent selected regions keep independent proxy contexts', async () => 
   const contexts = await Promise.all(['US', 'JP', 'US', 'JP'].map(region =>
     s.反代参数获取(new URL(ORIGIN + '/?region=' + region), UUID, '', true, env)));
   assert.deepEqual(contexts.map(c => c.反代IP), [POOL.map(ip => ip + ':443').join(','),
-    '198.51.100.1:443,198.51.100.2:443', POOL.map(ip => ip + ':443').join(','), '198.51.100.1:443,198.51.100.2:443']);
+    '8.8.8.8:443,9.9.9.9:443', POOL.map(ip => ip + ':443').join(','), '8.8.8.8:443,9.9.9.9:443']);
 });
 test('JP backup is tried in order, all JP failures never try US or direct', async () => {
-  for (const failures of [['198.51.100.1'], ['198.51.100.1', '198.51.100.2']]) {
+  for (const failures of [['8.8.8.8'], ['8.8.8.8', '9.9.9.9']]) {
     const attempts = []; const s = load(({ hostname }) => { attempts.push(hostname); return socket(hostname, failures.includes(hostname)); });
     const { env } = storage(regions());
+    await seedVerifiedPool(s, env, await s.读取区域配置(env), new Request(ORIGIN));
     const context = await s.反代参数获取(new URL(ORIGIN + '/?region=JP'), UUID, '', true, env);
     const ws = { readyState: 1, close() { this.readyState = 3; } };
     const result = s.forwardataTCP('chatgpt.com', 443, new Uint8Array([1]), ws, null, {}, UUID, {}, context, false, null, true);
     if (failures.length === 2) { await assert.rejects(result, /所有反代连接失败/); assert.equal(ws.readyState, 3); }
-    else assert.equal((await result).hostname, '198.51.100.2');
-    assert.deepEqual(attempts, ['198.51.100.1', '198.51.100.2']);
+    else assert.equal((await result).hostname, '9.9.9.9');
+    assert.deepEqual(attempts, ['8.8.8.8', '9.9.9.9']);
   }
 });
 test('regional admin endpoints require the existing login cookie', async () => {
@@ -147,7 +148,7 @@ test('subscriptions default to all regions with US first and explicit regional p
   assert.equal(response.status, 200); const config = JSON.parse(await response.text());
   assert.equal(config.proxies.length, 4);
   assert.equal(config['proxy-groups'][0].type, 'select');
-  assert.match(config['proxy-groups'][0].proxies[0], /US/);
+  assert.equal(config['proxy-groups'][0].proxies[0], '美国');
   assert.deepEqual(config['proxy-groups'].filter(g => g.type === 'fallback').map(g => g.proxies.length), [2, 2]);
   assert.ok(config.proxies.every(p => (p['ws-opts']?.path || p['plugin-opts']?.path).includes('region=')));
   assert.ok(config['proxy-groups'].every(g => !g.proxies.includes('DIRECT')));
@@ -159,7 +160,7 @@ test('selected SS and VLESS subscriptions stay in JP, unknown regions fail', asy
     assert.equal(response.status, 200); const links = atob(await response.text()).split('\n');
     assert.equal(links.length, 1);
     const link = new URL(links[0]);
-    assert.equal(link.hash, '#JP-' + protocol.toUpperCase());
+    assert.equal(decodeURIComponent(link.hash), '#日本');
     const path = protocol === 'ss' ? link.searchParams.get('plugin') : link.searchParams.get('path');
     assert.match(path, /region=JP/);
     if (protocol === 'ss') assert.match(path, /enc=aes-128-gcm/);
@@ -209,5 +210,41 @@ test('missing or incomplete KV rejects admin regions before camouflage routes', 
     assert.equal(response.status, 503);
     assert.match(response.headers.get('content-type'), /application\/json/);
     assert.match((await response.json()).error, /KV/);
+  }
+});
+
+test('default directory automatically includes six regions without manual candidates', () => {
+  const s = load(), config = s.默认区域配置();
+  assert.equal(config.version, 3); assert.equal(config.defaultRegion, 'US');
+  assert.deepEqual(Array.from(config.regions, r => r.code), ['US','JP','SG','HK','DE','GB']);
+  assert.ok(config.regions.every(r => r.auto && r.exits.length === 0));
+  for (const region of config.regions) assert.doesNotThrow(() => s.验证区域配置({version:3,defaultRegion:region.code,regions:[region]}));
+});
+
+test('v2 automatic config acquires directory once; v3 removals and old manual config are preserved', async () => {
+  const {s,env} = await session({version:2,defaultRegion:'US',regions:[{code:'US',name:'美国',auto:true,source:'cmliu-us-dns',exits:[]}]});
+  assert.equal((await s.读取区域配置(env)).regions.length, 6);
+  const manual = await session(regions()); assert.equal((await manual.s.读取区域配置(manual.env)).regions.length,2);
+  const edited = await session({version:3,defaultRegion:'US',regions:[{code:'US',name:'美国',auto:true,source:'cmliu-us-dns',exits:[]}]});
+  assert.equal((await edited.s.读取区域配置(edited.env)).regions.length,1);
+});
+
+test('client selections use region names and never expose numbered candidate lists', () => {
+  const s = load(), config = {HOST:'us.naiops.ccwu.cc',UUID,SS:{加密方式:'aes-128-gcm'}};
+  const output = JSON.parse(s.生成区域Clash订阅(config,s.默认区域配置()));
+  assert.deepEqual(output['proxy-groups'][0].proxies,['美国','日本','新加坡','香港','德国','英国']);
+  assert.equal(output.proxies.length,12);
+  assert.ok(output['proxy-groups'].slice(1).every(g=>g.type==='fallback' && g.proxies.length===2));
+  const links=s.生成区域通用订阅(config,'vless',s.默认区域配置()).split('\n');
+  assert.deepEqual(Array.from(links,link=>decodeURIComponent(new URL(link).hash.slice(1))),output['proxy-groups'][0].proxies);
+});
+
+test('missing proxy environment cannot turn automatic empty candidates into a dial', async () => {
+  const s=load();await assert.rejects(s.反代参数获取(new URL(ORIGIN),UUID),/KV/);
+});
+
+test('region names cannot collide with selector or generated protocol node names', () => {
+  const s=load();for(const name of ['地区选择','美国 · VLESS','美国 · SS','DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL']){
+    const config=regions();config.regions[1].name=name;assert.throws(()=>s.验证区域配置(config),/名称/);
   }
 });
