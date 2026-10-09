@@ -161,3 +161,9 @@ test('native Clash contains TLS VLESS and SS and a real fallback group', () => {
   assert.ok(cfg['proxy-groups'].every(g => !g.proxies.includes('DIRECT')));
   assert.deepEqual(cfg.rules, ['MATCH,美国故障切换']);
 });
+test('fallback health probe uses a target reachable through the pinned exits', () => {
+  const s = load();
+  const cfg = JSON.parse(s.生成美国Clash订阅({ HOST: 'us.naiops.ccwu.cc', UUID }));
+  assert.equal(cfg['proxy-groups'][0].url, 'https://www.cloudflare.com/cdn-cgi/trace');
+  assert.equal(cfg['proxy-groups'][0]['expected-status'], 200);
+});

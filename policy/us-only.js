@@ -25,7 +25,8 @@ function 生成美国Clash订阅(config) {
 					mode: 'websocket', tls: true, host, path: '/?enc=' + cipher, mux: false } }
 		],
 		'proxy-groups': [{ name: '美国故障切换', type: 'fallback', proxies: [vlessName, ssName],
-			url: 'https://www.gstatic.com/generate_204', interval: 300, lazy: false }],
+			url: 'https://www.cloudflare.com/cdn-cgi/trace', 'expected-status': 200,
+			interval: 300, lazy: false }],
 		rules: ['MATCH,美国故障切换']
 	}, null, 2);
 }
