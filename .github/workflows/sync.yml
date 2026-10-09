@@ -1,44 +1,57 @@
-name: Upstream Sync
-
-permissions:
-  contents: write
-
+name: Sync upstream into custom main
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
+    - cron: '20 0 * * *'
   workflow_dispatch:
-
+permissions:
+  contents: read
+concurrency:
+  group: naiops-upstream-sync
+  cancel-in-progress: false
 jobs:
-  sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
+  sync:
+    if: github.repository == 'duiniwukenaihe/edgetunnel' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: ${{ github.event.repository.fork }}
-
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
     steps:
-      - name: Checkout target repo
-        uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          fetch-depth: 0
           ref: main
-
-      - name: Sync upstream changes
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Verify current main before updating
+        run: bash scripts/verify.sh
+      - name: Generate upstream candidate with custom policy
+        id: candidate
+        run: python3 scripts/sync-upstream.py
+      - name: Test candidate before changing main
+        if: steps.candidate.outputs.changed == 'true'
+        run: bash scripts/verify.sh
+      - name: Save candidate patch
+        if: always() && steps.candidate.outputs.changed == 'true'
+        run: git diff --binary > "$RUNNER_TEMP/upstream-candidate.patch"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && steps.candidate.outputs.changed == 'true'
+        with:
+          name: upstream-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/upstream-candidate.patch
+          retention-days: 7
+      - name: Atomically advance tested candidate and main
+        if: steps.candidate.outputs.changed == 'true' && success()
+        env:
+          UPSTREAM_SHA: ${{ steps.candidate.outputs.upstream }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name "GH Action - Upstream Sync"
-          git config user.email "action@github.com"
-
-          git remote add upstream https://github.com/cmliu/edgetunnel.git
-          git fetch upstream main
-
-          if git diff --quiet HEAD upstream/main; then
-            # 内容和上游一致，直接对齐，顺带清理历史分叉留下的多余 merge commit
-            git reset --hard upstream/main
-            git push --force-with-lease origin main
-          else
-            # 有本地修改，保持原来的合并方式，不覆盖任何人的改动
-            if ! git pull --no-rebase upstream main; then
-              echo "[Error] 合并上游变更产生冲突，自动同步已暂停，请手动 Sync Fork 并解决冲突。"
-              echo "[Error] Merge conflict detected while syncing upstream. Please sync your fork manually and resolve the conflicts."
-              exit 1
-            fi
-            git push origin main
-          fi
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add _worker.js upstream/_worker.js upstream/version.json
+          git commit -m "Update tested US policy from upstream $UPSTREAM_SHA"
+          REVISION=$(git rev-parse HEAD)
+          git push --atomic origin HEAD:refs/heads/upstream-candidate HEAD:refs/heads/main
+          echo "Tested main revision: $REVISION" >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run deploy.yml --ref main -f revision="$REVISION"

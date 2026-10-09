@@ -1,7 +1,4 @@
-const Version = '2026-10-08 22:23:27';
-import { connect } from 'cloudflare:sockets';
-const 美国出口 = '3.132.174.45:443,192.3.208.192:443';
-const 发布版本 = '__NAIOPS_RELEASE_SHA__';
+﻿const Version = '2026-10-08 22:23:27';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io', EDT_版本号 = Number(String(Version).replace(/\D+/g, ''));
@@ -30,9 +27,7 @@ export default {
 		const url = new URL(请求URL文本);
 		const UA = request.headers.get('User-Agent') || 'null';
 		const upgradeHeader = (request.headers.get('Upgrade') || '').toLowerCase(), contentType = (request.headers.get('content-type') || '').toLowerCase();
-		const 管理员密码 = env.ADMIN;
-		if (!管理员密码) return new Response('请先在 Cloudflare 设置 ADMIN。', { status: 503, headers: { 'Cache-Control': 'no-store' } });
-		if (url.pathname === '/healthz') return Response.json({ status: env.KV ? 'ready' : 'missing-kv', revision: 发布版本 }, { status: env.KV ? 200 : 503, headers: { 'Cache-Control': 'no-store' } });
+		const 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY || env.UUID || env.uuid;
 		const 加密秘钥 = env.KEY || '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
 		const userIDMD5 = await MD5MD5(管理员密码 + 加密秘钥);
 		const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
@@ -43,7 +38,7 @@ export default {
 		const 访问路径 = url.pathname.slice(1).toLowerCase();
 		调试日志打印 = ['1', 'true'].includes(env.DEBUG) || 调试日志打印;
 		预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 预加载竞速拨号;
-		反代并发拨号数 = 1;
+		反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 反代并发拨号数);
 		TCP并发拨号数 = Math.max(1, Number(env.TCP_CONCURRENT_DIAL) || TCP并发拨号数);
 		if (!env.TCP_CONCURRENT_DIAL && TCP并发拨号数 !== 1 && 识别运营商(request) === 'cmcc') TCP并发拨号数 = 1;
 		let 默认反代IP = (`${request.cf.colo}.${特征码字典[0]}.${特征码字典[1]}SsSs.nEt`).toLowerCase(), 默认反代兜底 = true;
@@ -352,16 +347,7 @@ export default {
 													: 'mixed';
 
 						if (!ua.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
-						if (!['clash', 'mixed'].includes(订阅类型)) return new Response('请使用 target=clash 或 target=mixed。', { status: 400 });
-						if (订阅类型 === 'clash') {
-							responseHeaders['content-type'] = 'application/yaml; charset=utf-8';
-							return new Response(生成美国Clash订阅(config_JSON), { status: 200, headers: responseHeaders });
-						}
-						const 协议类型 = url.searchParams.get('protocol') || config_JSON.协议类型;
-						if (!['vless', 'ss'].includes(协议类型)) return new Response('请使用 protocol=vless 或 protocol=ss。', { status: 400 });
-						const link = 生成美国通用订阅(config_JSON, 协议类型);
-						const body = (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64')) ? btoa(link) : link;
-						return new Response(body, { status: 200, headers: responseHeaders });
+						const 协议类型 = ((url.searchParams.has('surge') || ua.includes('surge')) && config_JSON.协议类型 !== 'ss') ? 'tro' + 'jan' : config_JSON.协议类型;
 						let 订阅内容 = '';
 						if (订阅类型 === 'mixed') {
 							const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
@@ -3342,7 +3328,10 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接, pars
 }
 
 function 创建请求TCP连接器(request) {
-	return connect;
+	const 请求对象 = /** @type {any} */ (request);
+	const fetcher = 请求对象?.fetcher;
+	if (!fetcher || typeof fetcher.connect !== 'function') throw new Error('request.fetcher.connect unavailable');
+	return (options, init) => init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
 }
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
@@ -6182,43 +6171,142 @@ async function 请求优选API(urls, 默认端口 = '443', uid = "000000", 超�
 	return [Array.from(results), LINK数组, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-function 生成美国通用订阅(config, protocol) {
-	const host = config.HOST, uuid = config.UUID;
-	if (protocol === 'ss') {
-		const cipher = config.SS?.加密方式 || 'aes-128-gcm';
-		const plugin = `v2ray-plugin;mode=websocket;host=${host};path=/?enc=${cipher};tls;mux=0`;
-		return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#US-SS`;
-	}
-	const params = new URLSearchParams({ security: 'tls', type: 'ws', host, sni: host,
-		path: '/', encryption: 'none', fp: 'chrome' });
-	return `vless://${uuid}@${host}:443?${params}#US-VLESS`;
-}
-
-function 生成美国Clash订阅(config) {
-	const host = config.HOST, uuid = config.UUID;
-	const cipher = config.SS?.加密方式 || 'aes-128-gcm';
-	const vlessName = '美国-VLESS', ssName = '美国-SS';
-	return JSON.stringify({
-		'mixed-port': 7890, 'allow-lan': false, mode: 'rule', 'log-level': 'warning',
-		proxies: [
-			{ name: vlessName, type: 'vless', server: host, port: 443, uuid, tls: true,
-				udp: false, servername: host, network: 'ws', 'client-fingerprint': 'chrome',
-				'ws-opts': { path: '/', headers: { Host: host } } },
-			{ name: ssName, type: 'ss', server: host, port: 443, cipher, password: uuid,
-				udp: false, plugin: 'v2ray-plugin', 'plugin-opts': {
-					mode: 'websocket', tls: true, host, path: '/?enc=' + cipher, mux: false } }
-		],
-		'proxy-groups': [{ name: '美国故障切换', type: 'fallback', proxies: [vlessName, ssName],
-			url: 'https://www.gstatic.com/generate_204', interval: 300, lazy: false }],
-		rules: ['MATCH,美国故障切换']
-	}, null, 2);
-}
-
 async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true) {
-	// 禁止 URL、KV 或默认直连绕过经过验证的美国出口。
-	return { 木马反代地址: null, 反代IP: 美国出口, 代理类型: 'proxyip',
-		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false };
+	const { searchParams } = url;
+	const pathname = decodeURIComponent(url.pathname);
+	const pathLower = pathname.toLowerCase();
+	let 反代IP = 默认反代IP, 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {}, 启用反代兜底 = 默认反代兜底;
+	const 反代上下文 = { 木马反代地址: null, 反代IP, 代理类型: null, 代理账号: '', 代理全局: false, 代理参数: {}, 反代兜底: 启用反代兜底 };
+	const 保存快照 = () => {
+		反代上下文.反代IP = 反代IP;
+		反代上下文.代理类型 = 启用SOCKS5反代;
+		反代上下文.代理账号 = 我的SOCKS5账号;
+		反代上下文.代理全局 = 启用SOCKS5全局反代;
+		反代上下文.代理参数 = { ...parsedSocks5Address };
+		反代上下文.反代兜底 = 启用反代兜底;
+	};
+
+	const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
+	if (链式代理路径匹配) {
+		try {
+			const 链式代理明文 = base64SecretDecode(链式代理路径匹配[1].replace(/\/+$/, ''), uuid);
+			const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
+			if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
+			if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
+			我的SOCKS5账号 = '';
+			反代IP = '链式代理';
+			启用反代兜底 = false;
+			启用SOCKS5全局反代 = true;
+			启用SOCKS5反代 = String(type).toLowerCase();
+			parsedSocks5Address = {
+				username: 链式代理地址.username,
+				password: 链式代理地址.password,
+				hostname: 链式代理地址.hostname,
+				port: Number(链式代理地址.port)
+			};
+			if (isNaN(parsedSocks5Address.port)) throw new Error('链式代理端口无效');
+			保存快照();
+			return 反代上下文;
+		} catch (err) {
+			console.error('解析链式代理参数失败:', err.message);
+		}
+	}
+
+	我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
+	启用SOCKS5全局反代 = searchParams.has('globalproxy');
+	if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
+	else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
+	else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
+	else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
+	else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
+
+	const 解析代理URL = (值, 强制全局 = true) => {
+		const 匹配 = /^(socks5|http|https|turn|sstp):\/\/(.+)$/i.exec(值 || '');
+		if (!匹配) return false;
+		启用SOCKS5反代 = 匹配[1].toLowerCase();
+		我的SOCKS5账号 = 匹配[2].split('/')[0];
+		if (强制全局) 启用SOCKS5全局反代 = true;
+		return true;
+	};
+
+	const 设置反代IP = (值) => {
+		反代IP = 值;
+		启用SOCKS5反代 = null;
+		启用反代兜底 = false;
+	};
+
+	const 提取路径值 = (值) => {
+		if (!值.includes('://')) {
+			const 斜杠索引 = 值.indexOf('/');
+			return 斜杠索引 > 0 ? 值.slice(0, 斜杠索引) : 值;
+		}
+		const 协议拆分 = 值.split('://');
+		if (协议拆分.length !== 2) return 值;
+		const 斜杠索引 = 协议拆分[1].indexOf('/');
+		return 斜杠索引 > 0 ? `${协议拆分[0]}://${协议拆分[1].slice(0, 斜杠索引)}` : 值;
+	};
+
+	const 木马路径匹配 = /\/trojan=([^?#\s]+)/i.exec(pathname);
+	if (木马路径匹配) {
+		try {
+			反代上下文.木马反代地址 = 解析木马反代地址(木马路径匹配[1].replace(/\/+$/, ''));
+		} catch (err) {
+			console.error('解析木马反代地址失败:', err.message);
+			反代上下文.木马反代地址 = null;
+		}
+	}
+
+	const 查询反代IP = searchParams.get('proxyip');
+	if (查询反代IP !== null) {
+		if (!解析代理URL(查询反代IP)) {
+			设置反代IP(查询反代IP);
+			保存快照();
+			return 反代上下文;
+		}
+	} else {
+		let 匹配 = /\/(socks5?|http|https|turn|sstp):\/?\/?([^/?#\s]+)/i.exec(pathname);
+		if (匹配) {
+			const 类型 = 匹配[1].toLowerCase();
+			启用SOCKS5反代 = 类型 === 'sock' || 类型 === 'socks' ? 'socks5' : 类型;
+			我的SOCKS5账号 = 匹配[2].split('/')[0];
+			启用SOCKS5全局反代 = true;
+		} else if ((匹配 = /\/(g?s5|socks5|g?http|g?https|g?turn|g?sstp)=([^/?#\s]+)/i.exec(pathname))) {
+			const 类型 = 匹配[1].toLowerCase();
+			我的SOCKS5账号 = 匹配[2].split('/')[0];
+			启用SOCKS5反代 = 类型.includes('sstp') ? 'sstp' : (类型.includes('turn') ? 'turn' : (类型.includes('https') ? 'https' : (类型.includes('http') ? 'http' : 'socks5')));
+			if (类型.startsWith('g')) 启用SOCKS5全局反代 = true;
+		} else if ((匹配 = /\/(proxyip[.=]|pyip=|ip=)([^?#\s]+)/.exec(pathLower))) {
+			const 路径反代值 = 提取路径值(匹配[2]);
+			if (!解析代理URL(路径反代值)) {
+				设置反代IP(路径反代值);
+				保存快照();
+				return 反代上下文;
+			}
+		}
+	}
+
+	if (!我的SOCKS5账号) {
+		启用SOCKS5反代 = null;
+		保存快照();
+		return 反代上下文;
+	}
+
+	try {
+		parsedSocks5Address = await 获取SOCKS5账号(我的SOCKS5账号, 获取代理默认端口(启用SOCKS5反代));
+		if (searchParams.get('socks5')) 启用SOCKS5反代 = 'socks5';
+		else if (searchParams.get('http')) 启用SOCKS5反代 = 'http';
+		else if (searchParams.get('https')) 启用SOCKS5反代 = 'https';
+		else if (searchParams.get('turn')) 启用SOCKS5反代 = 'turn';
+		else if (searchParams.get('sstp')) 启用SOCKS5反代 = 'sstp';
+		else 启用SOCKS5反代 = 启用SOCKS5反代 || 'socks5';
+	} catch (err) {
+		console.error('解析SOCKS5地址失败:', err.message);
+		启用SOCKS5反代 = null;
+	}
+	保存快照();
+	return 反代上下文;
 }
+
 const 反代协议默认端口 = { socks5: 1080, http: 80, https: 443, turn: 3478, sstp: 443 };
 function 获取代理默认端口(类型) {
 	return 反代协议默认端口[String(类型 || '').toLowerCase()] || 80;
@@ -6423,7 +6511,12 @@ async function 解析地址端口(proxyIP, 目标域名 = 'dash.cloudflare.com',
 			所有反代数组.push([地址, 端口]);
 		}
 	}
-	const 解析结果 = 所有反代数组.slice(0, 8);
+	const 排序后数组 = 所有反代数组.sort((a, b) => a[0].localeCompare(b[0]));
+	const 目标根域名 = 目标域名.includes('.') ? 目标域名.split('.').slice(-2).join('.') : 目标域名;
+	let 随机种子 = [...(目标根域名 + UUID)].reduce((a, c) => a + c.charCodeAt(0), 0);
+	log(`[反代解析] 随机种子: ${随机种子}\n目标站点: ${目标根域名}`)
+	const 洗牌后 = [...排序后数组].sort(() => (随机种子 = (随机种子 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+	const 解析结果 = 洗牌后.slice(0, 8);
 	log(`[反代解析] 解析完成 总数: ${解析结果.length}个\n${解析结果.map(([ip, port], index) => `${index + 1}. ${ip}:${port}`).join('\n')}`);
 	return 解析结果;
 }

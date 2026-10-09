@@ -1,4 +1,7 @@
 # 🚀 edgetunnel 2.1
+
+> 本仓库的 `main` 是 naiops 美国主备定制版。上游更新先生成候选、通过自动测试，再推进 main；Cloudflare 发布需要仓库所有者审核。使用与维护请先读[自动同步与授权发布](docs/自动同步与授权发布.md)。本分支只原生输出 Clash/Mihomo 和 VLESS/SS 通用订阅；下方保留上游说明作为参考。
+
 ![后台页面](./img.png)
 
 [![Stars](https://img.shields.io/github/stars/cmliu/edgetunnel?style=flat-square&logo=github)](https://github.com/cmliu/edgetunnel/stargazers)
