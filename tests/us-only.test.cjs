@@ -94,7 +94,7 @@ test('mixed subscription excludes unverified imported nodes from KV', async () =
   const { response, external } = await subscribe('mixed', 'vless',
     `us.naiops.ccwu.cc:443#美国入口\nvless://${UUID}@non-us.invalid:443?security=tls#external`);
   const links = atob(await response.text()).split('\n');
-  assert.equal(links.length, 1);
+  assert.equal(links.length, 4);
   assert.equal(new URL(links[0]).hostname, 'us.naiops.ccwu.cc');
   assert.deepEqual(external, []);
 });

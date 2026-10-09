@@ -59,19 +59,33 @@ async function 读取区域配置(env) {
 	}
 }
 
+const 美国子区域 = [
+	{ code: 'US-EAST', area: 'east', name: '美国东部' },
+	{ code: 'US-CENTRAL', area: 'central', name: '美国中部' },
+	{ code: 'US-WEST', area: 'west', name: '美国西部' }
+];
+
+function 区域入口列表(config) {
+	return config.regions.flatMap(region => {
+		const entry = { ...region, country: region.code, area: null, name: 'Naiops-' + region.code + ' · ' + region.name + '自动' };
+		return region.code === 'US' ? [entry, ...美国子区域.map(child => ({ ...entry, ...child, name: 'Naiops-' + child.code + ' · ' + child.name }))] : [entry];
+	});
+}
+
 function 选择区域(config, url) {
 	const values = url.searchParams.getAll('region');
-	if (values.length > 1 || (values.length === 1 && !/^[a-zA-Z]{2}$/.test(values[0])))
-		throw 区域错误('region 参数必须是单个两位区域代码。');
+	if (values.length > 1 || (values.length === 1 && !/^[a-zA-Z]{2}(?:-(?:EAST|CENTRAL|WEST))?$/i.test(values[0])))
+		throw 区域错误('region 参数必须是单个有效区域代码。');
 	const code = values.length ? values[0].toUpperCase() : config.defaultRegion;
-	const region = config.regions.find(region => region.code === code);
+	const region = 区域入口列表(config).find(region => region.code === code);
 	if (!region) throw 区域错误('所选区域不存在，请更新订阅或在面板中配置。');
 	return region;
 }
 
 function 订阅区域列表(config, selected) {
-	return selected ? [selected] : [config.regions.find(r => r.code === config.defaultRegion),
-		...config.regions.filter(r => r.code !== config.defaultRegion)];
+	const entries = 区域入口列表(config);
+	return selected ? [entries.find(region => region.code === selected.code)] : [entries.find(r => r.code === config.defaultRegion),
+		...entries.filter(r => r.code !== config.defaultRegion)];
 }
 
 function 生成区域通用订阅(config, protocol, regions = 默认区域配置(), selected = null) {
@@ -136,9 +150,16 @@ async function 处理区域管理(request, env, url, host, uuid) {
 				catch (error) { if (error.status !== 503) throw error; refreshError = error; }
 			}
 			const { entry } = await 读取出口池状态(env, region, request);
-			return Response.json({ region: region.code, colo: request.cf?.colo || 'unknown', pool: entry.pool,
+			const pool = 区域池视图(entry.pool, region);
+			const unavailableState = 区域不可用状态(entry.pool, region);
+			const reasons = { not_checked: '尚未检测当前国家出口。', expired: '所选区域的出口证明已过期。',
+				source_failed: '发现来源或检测失败，当前区域暂无有效出口。', missing_geo: '有效国家出口缺少可识别的美国州证据。',
+				area_unavailable: '所选美国子区域暂无有效州证据出口。', country_unavailable: '当前国家暂无有效出口。' };
+			return Response.json({ region: region.code, country: region.country, area: region.area, colo: request.cf?.colo || 'unknown', pool,
+				availableCount: pool?.exits.length || 0, countryPool: 区域池统计(entry.pool, region.country),
+				unavailableState, unavailableReason: unavailableState ? reasons[unavailableState] : null,
 				...(refreshError ? { error: refreshError.message } : {}),
-				available: !!entry.pool?.exits.length && entry.pool.expiresAt > Date.now(),
+				available: !!pool?.exits.length,
 				refreshSeconds: 900, expirySeconds: 1800 }, { status: refreshError ? 503 : 200, headers });
 		} catch (error) { return 区域错误响应(error); }
 	}
@@ -165,7 +186,7 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			if (protocol) address.searchParams.set('protocol', protocol);
 			return address.href;
 		};
-		return Response.json({ config, sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
+		return Response.json({ config, entries: 订阅区域列表(config), sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
 			vless: subscription('mixed', 'vless'), ss: subscription('mixed', 'ss') } }, { headers });
 	} catch (error) { return 区域错误响应(error); }
 }

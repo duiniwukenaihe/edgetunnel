@@ -149,3 +149,47 @@ test('a backup dial cannot use a pool that expired during the first dial', async
   await assert.rejects(f.s.forwardataTCP('chatgpt.com',443,new Uint8Array([1]),{readyState:1,close(){}},null,{},UUID,req,context,false,null,true),/过期/);
   assert.deepEqual(f.calls,['3.132.174.45']);
 });
+
+test('a retry skips a individually expired member while keeping a fresh matching backup', async () => {
+  const f=fixture();let now=Date.now();f.s.Date=class extends Date{static now(){return now;}};
+  const address=['3.132.174.45:443','192.9.157.76:443','8.8.8.8:443'];
+  const pool={region:'US-WEST',country:'US',area:'west',expiresAt:now+30*60000,
+    exits:address.map((value,i)=>({address:value,country:'US',proofVerified:true,receiptVersion:2,regionCode:'CA',city:null,
+      area:'west',checkedAt:now-(i<2?29*60000:0)}))};
+  f.s.connect=({hostname})=>{f.calls.push(hostname);if(hostname==='3.132.174.45'){now+=2*60000;return socket(hostname,true);}return socket(hostname,false);};
+  const context={反代IP:address.join(','),代理类型:'proxyip',代理全局:true,反代兜底:false,获取验证出口:async()=>pool};
+  const result=await f.s.forwardataTCP('chatgpt.com',443,new Uint8Array([1]),{readyState:1,close(){}},null,{},UUID,{},context,false,null,true);
+  assert.equal(result.hostname,'8.8.8.8');assert.deepEqual(f.calls,['3.132.174.45','8.8.8.8']);
+});
+
+test('admin metadata exposes derived entries and read-only selected status with shared counters', async () => {
+  const f=fixture();await f.login();
+  const before=f.store.get('regions.json');
+  const entries=await(await f.request('/admin/regions.json',{},true)).json();
+  assert.equal(entries.entries.length,9);assert.equal(entries.entries[1].country,'US');assert.equal(entries.entries[1].area,'east');
+  assert.equal(f.store.get('regions.json'),before);
+  const empty=await(await f.request('/admin/exits.json?region=US-WEST',{},true)).json();
+  assert.equal(empty.available,false);assert.equal(empty.country,'US');assert.equal(empty.unavailableState,'not_checked');assert.match(empty.unavailableReason,/尚未检测/);assert.equal(f.probes.length,0);
+  f.s.探测区域出口=async(address,country)=>({address,country,exitIP:'9.9.9.9',checkedAt:Date.now(),latency:1,proofVerified:true,
+    receiptVersion:2,regionCode:'CA',city:'Los Angeles',area:'west'});
+  const opts={method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'};
+  const refreshed=await(await f.request('/admin/exits.json?region=US-WEST',opts,true)).json();
+  assert.equal(refreshed.availableCount,1);assert.equal(refreshed.pool.region,'US-WEST');assert.equal(refreshed.countryPool.discoveredCount,1);
+  assert.deepEqual(refreshed.countryPool.availableCounts,{US:1,'US-EAST':0,'US-CENTRAL':0,'US-WEST':1});
+  const east=await(await f.request('/admin/exits.json?region=US-EAST',{},true)).json();
+  assert.equal(east.available,false);assert.equal(east.pool.exits.length,0);assert.equal(east.countryPool.probedCount,1);
+});
+
+test('admin GET distinguishes expired, missing geography, and failed source without probing', async () => {
+  for(const state of ['expired','missing_geo','source_failed']) {
+    const f=fixture();await f.login();let now=Date.now();f.s.Date=class extends Date{static now(){return now;}};
+    const probe=f.s.探测区域出口;f.s.探测区域出口=async(...args)=>({...await probe(...args),checkedAt:now,
+      ...(state==='expired'?{receiptVersion:2,regionCode:'CA',city:null,area:'west'}:{})});
+    const req=new Request(origin);Object.defineProperty(req,'cf',{value:{colo:'SJC'}});
+    if(state==='source_failed'){f.s.发现区域候选=async()=>{throw new Error('DNS offline');};await assert.rejects(f.s.获取有效区域池(f.env,f.s.选择区域(await f.s.读取区域配置(f.env),new URL(origin)),req));}
+    else await f.s.获取有效区域池(f.env,f.s.选择区域(await f.s.读取区域配置(f.env),new URL(origin)),req);
+    if(state==='expired')now+=31*60000;
+    const count=f.probes.length;const status=await(await f.request('/admin/exits.json?region=US-WEST',{},true)).json();
+    assert.equal(status.unavailableState,state);assert.ok(status.unavailableReason);assert.equal(f.probes.length,count);
+  }
+});

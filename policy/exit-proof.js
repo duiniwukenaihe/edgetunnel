@@ -2,7 +2,7 @@
 // Only a random nonce is sent through candidates. The independent random key stays in KV.
 const 出口回执密钥名称 = '__naiops_exit_receipt_key_v1';
 function 出口回执内容(receipt) {
-	return JSON.stringify([1, receipt.nonce, receipt.hostname, receipt.revision, receipt.issuedAt, receipt.ip, receipt.country]);
+	return JSON.stringify([2, receipt.nonce, receipt.hostname, receipt.revision, receipt.issuedAt, receipt.ip, receipt.country, receipt.regionCode, receipt.city]);
 }
 
 async function 出口回执密钥(env) {
@@ -32,8 +32,10 @@ async function 处理出口回执(request, env) {
 			if (canonical === '[2a06:98c0:3600::103]:443') throw new Error('synthetic Worker address');
 		}
 		catch { throw 区域错误('边缘出口地址无效。', 503); }
-		const receipt = { version: 1, nonce: values[0], hostname: url.hostname, revision: 发布版本,
-			issuedAt: Date.now(), ip, country };
+		const regionCode = typeof request.cf?.regionCode === 'string' && /^[A-Z0-9-]{1,8}$/.test(request.cf.regionCode) ? request.cf.regionCode : null;
+		const city = typeof request.cf?.city === 'string' && request.cf.city.length <= 128 && !/[\x00-\x1f\x7f]/.test(request.cf.city) ? request.cf.city : null;
+		const receipt = { version: 2, nonce: values[0], hostname: url.hostname, revision: 发布版本,
+			issuedAt: Date.now(), ip, country, regionCode, city };
 		const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await 出口回执密钥(env), new TextEncoder().encode(出口回执内容(receipt))));
 		receipt.signature = Array.from(mac, b => b.toString(16).padStart(2, '0')).join('');
 		return Response.json(receipt, { headers: { 'Cache-Control': 'no-store' } });
@@ -41,19 +43,23 @@ async function 处理出口回执(request, env) {
 }
 
 async function 验证出口回执(receipt, env, request, nonce, code) {
-	if (!receipt || receipt.version !== 1 || receipt.nonce !== nonce || receipt.hostname !== new URL(request.url).hostname ||
+	if (!receipt || receipt.version !== 2 || receipt.nonce !== nonce || receipt.hostname !== new URL(request.url).hostname ||
 		receipt.revision !== 发布版本 || !Number.isFinite(receipt.issuedAt) || receipt.issuedAt < Date.now() - 10000 ||
 		receipt.issuedAt > Date.now() + 2000 || typeof receipt.signature !== 'string' || !/^[0-9a-f]{64}$/.test(receipt.signature))
-		throw 区域错误('出口签名回执无效或过期。', 503);
+		throw Object.assign(区域错误('出口签名回执无效或过期。', 503), { invalidatesExit: true });
 	const signature = Uint8Array.from(receipt.signature.match(/../g), byte => parseInt(byte, 16));
 	if (!await crypto.subtle.verify('HMAC', await 出口回执密钥(env), signature, new TextEncoder().encode(出口回执内容(receipt))))
 		throw Object.assign(区域错误('出口回执签名不匹配。', 503), { invalidatesExit: true });
 	if (receipt.country !== code) throw Object.assign(区域错误('实际出口国家不符合所选区域。', 503), { invalidatesExit: true });
-	验证公共出口((receipt.ip?.includes(':') ? '[' + receipt.ip + ']' : receipt.ip) + ':443');
-	return { exitIP: receipt.ip, country: receipt.country, proofVerified: true };
+	try { 验证公共出口((receipt.ip?.includes(':') ? '[' + receipt.ip + ']' : receipt.ip) + ':443'); }
+	catch (error) { throw Object.assign(error, { invalidatesExit: true }); }
+	if (!有效地理字段(receipt)) throw Object.assign(区域错误('出口地理证据格式无效。', 503), { invalidatesExit: true });
+	return { exitIP: receipt.ip, country: receipt.country, proofVerified: true, receiptVersion: 2,
+		regionCode: receipt.regionCode, city: receipt.city, area: receipt.country === 'US' ? 美国州区域(receipt.regionCode) : null };
 }
 
 function 解析候选回执响应(text) {
+	try {
 	const split = text.indexOf('\r\n\r\n');
 	if (split < 0 || split > 4096 || text.length > 8192 || !/^HTTP\/1\.[01] 200(?: |\r\n)/.test(text))
 		throw 区域错误('出口回执未返回有效 HTTP 200。', 503);
@@ -78,6 +84,7 @@ function 解析候选回执响应(text) {
 	} else if (lengths.length && Number(lengths[0][1]) !== new TextEncoder().encode(body).byteLength)
 		throw 区域错误('出口回执长度不符。', 503);
 	try { return JSON.parse(body); } catch { throw 区域错误('出口回执不是有效 JSON。', 503); }
+	} catch (error) { throw Object.assign(error, { invalidatesExit: text.length > 0 }); }
 }
 
 async function 读取候选回执(address, hostname, nonce, signal) {
@@ -100,7 +107,7 @@ async function 读取候选回执(address, hostname, nonce, signal) {
 				let size = 0, text = ''; const decoder = new TextDecoder();
 				for (;;) {
 					const value = await socket.read(); if (!value) break;
-					size += value.byteLength; if (size > 8192) throw new Error('出口回执响应超过限制。');
+					size += value.byteLength; if (size > 8192) throw Object.assign(new Error('出口回执响应超过限制。'), { invalidatesExit: true });
 					text += decoder.decode(value, { stream: true });
 				}
 				return 解析候选回执响应(text + decoder.decode());
