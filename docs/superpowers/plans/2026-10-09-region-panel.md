@@ -56,4 +56,4 @@ Files: `.github/workflows/deploy.yml`、`sync.yml`、`README.md`、`docs/自动�
 - [x] 增加工作流行为测试，确认发布仅 workflow_dispatch，上游同步不主动 dispatch 发布。
 - [x] 改为 `on: {workflow_dispatch: {inputs: {revision: {required: false, type: string}}}}` 的现有等价缩进结构；保留准确 SHA 打包、可选关闭的 Token deploy 和所有者审核。
 - [x] 文档写清 Run workflow → 下载 ZIP → 当前 Pages 项目 Create a new deployment → production → Save and Deploy → /healthz 对照 SHA。源代码 ZIP 不可代替发布包。
-- [ ] `bash scripts/verify.sh`、差异检查和独立审查通过后，提交 scoped 文件、建立 PR、等待远程 CI，再合并 main；不触发 Cloudflare 部署。
+- [x] 全部回归、来源校验、差异检查及独立复审通过；实现提交 23059b9 已在 PR #5 通过远程 CI。合并和随后手动打包以 GitHub 状态为准，不触发 Cloudflare 部署。
