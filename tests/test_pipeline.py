@@ -4,6 +4,11 @@ import os
 import shutil
 import tempfile
 import unittest
+import contextlib
+import io
+import runpy
+import urllib.error
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +119,30 @@ class ApprovalTests(unittest.TestCase):
         environment['protection_rules'][0]['reviewers'].append(
             {'type':'User', 'reviewer':{'login':'another-reviewer'}})
         self.assertNotEqual(self.run_guard(environment).returncode, 0)
+
+class LiveReleaseTests(unittest.TestCase):
+    def check(self, returned_revision):
+        def response(request, timeout):
+            if not request.get_header('User-agent'):
+                raise urllib.error.HTTPError(request.full_url, 403, 'error code: 1010', {}, io.BytesIO())
+            return io.BytesIO(json.dumps({'status':'ready', 'revision':returned_revision}).encode())
+        with patch('sys.argv', ['check-live-release.py', 'a' * 40]), \
+             patch('urllib.request.urlopen', side_effect=response), \
+             patch('time.sleep'), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                runpy.run_path(str(ROOT / 'scripts/check-live-release.py'), run_name='__main__')
+            except SystemExit as error:
+                return 1, str(error)
+        return 0, ''
+
+    def test_live_check_identifies_client_and_accepts_exact_revision(self):
+        code, message = self.check('a' * 40)
+        self.assertEqual(code, 0, message)
+
+    def test_live_check_still_rejects_another_deployed_revision(self):
+        code, message = self.check('b' * 40)
+        self.assertNotEqual(code, 0)
+        self.assertIn('Ready state or deployed revision does not match', message)
 
 if __name__ == '__main__':
     unittest.main()
