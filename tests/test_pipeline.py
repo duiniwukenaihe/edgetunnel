@@ -27,8 +27,8 @@ class PolicyGenerationTests(unittest.TestCase):
             content = target.read_text()
             self.assertIn("import { connect } from 'cloudflare:sockets';", content)
             self.assertIn('const 管理员密码 = env.ADMIN;', content)
-            self.assertIn('function 生成美国通用订阅(', content)
-            self.assertIn('反代IP: 美国出口', content)
+            self.assertIn('function 生成区域通用订阅(', content)
+            self.assertIn("反代IP: region.exits.join(',')", content)
 
     def test_changed_anchor_stops_without_overwriting_output(self):
         with tempfile.TemporaryDirectory(prefix='naiops-policy-test-') as tmp:
@@ -143,6 +143,31 @@ class LiveReleaseTests(unittest.TestCase):
         code, message = self.check('b' * 40)
         self.assertNotEqual(code, 0)
         self.assertIn('Ready state or deployed revision does not match', message)
+
+class ManualPublishTests(unittest.TestCase):
+    def test_publish_is_only_manually_dispatched(self):
+        workflow = (ROOT / '.github/workflows/deploy.yml').read_text()
+        trigger = workflow.split('permissions:', 1)[0]
+        self.assertIn('workflow_dispatch:', trigger)
+        self.assertNotIn('push:', trigger)
+        self.assertNotIn('schedule:', trigger)
+
+    def test_upstream_sync_does_not_start_a_release(self):
+        workflow = (ROOT / '.github/workflows/sync.yml').read_text()
+        self.assertNotIn('gh workflow run deploy.yml', workflow)
+
+    def test_cloudflare_secret_is_only_used_in_the_opt_in_protected_job(self):
+        workflow = (ROOT / '.github/workflows/deploy.yml').read_text()
+        prepare, deploy = workflow.split('\n  deploy:', 1)
+        self.assertNotIn('secrets.CLOUDFLARE_API_TOKEN', prepare)
+        self.assertIn("if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'", deploy)
+        self.assertIn('name: cloudflare-production', deploy)
+        self.assertIn('--project-name=naiops-us-github', deploy)
+
+    def test_default_package_does_not_require_optional_cloudflare_environment(self):
+        workflow = (ROOT / '.github/workflows/deploy.yml').read_text()
+        guard = workflow.split('      - name: Check owner-approval environment', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'", guard)
 
 if __name__ == '__main__':
     unittest.main()

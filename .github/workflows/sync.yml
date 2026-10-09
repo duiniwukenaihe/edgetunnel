@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -44,14 +43,12 @@ jobs:
         if: steps.candidate.outputs.changed == 'true' && success()
         env:
           UPSTREAM_SHA: ${{ steps.candidate.outputs.upstream }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add _worker.js upstream/_worker.js upstream/version.json
-          git commit -m "Update tested US policy from upstream $UPSTREAM_SHA"
+          git commit -m "Update tested regional policy from upstream $UPSTREAM_SHA"
           REVISION=$(git rev-parse HEAD)
           git push --atomic origin HEAD:refs/heads/upstream-candidate HEAD:refs/heads/main
           echo "Tested main revision: $REVISION" >> "$GITHUB_STEP_SUMMARY"
-          gh workflow run deploy.yml --ref main -f revision="$REVISION"

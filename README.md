@@ -1,116 +1,84 @@
-# naiops 美国主备定制版
+# naiops 区域主备定制版
 
-基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，面向 VLESS、SS 和 Mihomo/Clash Meta 客户端。`main` 保存本项目的定制策略：固定美国出口候选、主备按顺序尝试、全部失败时断开；上游更新经生成和测试后进入 main，Cloudflare 发布另行等待仓库所有者审批。
+基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，支持 VLESS、SS 和 Mihomo/Clash Meta。默认美国；管理员在我们的面板维护其他地区及有序出口池。代理只在所选地区内尝试主备，全部失败断开，不直连、不跨区。
 
 [![CI](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml)
 
-- [与上游的具体差异](docs/上游差异.md)
-- [自动同步、测试与授权发布](docs/自动同步与授权发布.md)
+- [与上游的差异](docs/上游差异.md)
+- [同步、测试与手动发布](docs/自动同步与授权发布.md)
+- [区域设计](docs/superpowers/specs/2026-10-09-region-panel-design.md)
 - [上游版本锁](upstream/version.json)
 
-## 与上游相比
+## 管理地区与出口
 
-| 项目 | 导入的上游版本 | 本分支 |
+新版本发布后打开 `/login`，使用 Cloudflare 中已有 ADMIN 密码登录；`/admin` 会进入我们的 `/admin/regions` 页面。原管理页面保留在 `/admin/settings`。
+
+1. 初始只有 US 美国：`3.132.174.45:443` 为主出口，`192.3.208.192:443` 为备用。
+2. 添加地区，填写唯一的两位大写代码、名称及真实出口。出口每行一个，按主备顺序填写，IPv6 用 `[IPv6]:端口`。每区 1–8 个出口，最多 16 个地区。
+3. 可以修改默认地区、出口顺序或删除地区。默认地区必须存在，至少保留一个地区。
+4. 保存后更新客户端订阅。KV 在不同机房的传播可能需要约一分钟；已有连接继续使用原出口。删除地区后，旧节点会被拒绝，不会自动改走其他地区。
+5. 在同一代理客户端打开 `https://www.cloudflare.com/cdn-cgi/trace`，检查 `loc` 和实际 IP，再验证需要的网站与 ChatGPT 登录。
+
+配置单独保存到已有 KV 的 `regions.json`，不改变 ADMIN、HOST、UUID 或旧 `config.json`。未保存时默认美国；损坏配置或存储不可用时拒绝代理，不静默回落。页面提示读取错误时可以编辑并保存有效配置修复。修改地区配置不需要重新发布代码。
+
+地区代码是管理员标记，保存不证明出口在该国家。初始候选曾实测为美国，但免费出口的国家、可用性和信誉可能改变。本分支不进行持续地理检测、全网自动优选，也不保证 ChatGPT 登录成功。HTTP 403 不会触发服务器换 IP。
+
+## 客户端与自动切换
+
+面板提供含私密 token 的完整订阅地址，可选择全部地区或单一地区。不要公开地址、UUID 或密码。
+
+| 客户端 | 参数 | 行为 |
 | --- | --- | --- |
-| 出口设置 | ProxyIP、SOCKS5/HTTP 等多种配置和路径参数 | 固定美国主备候选，面板、KV、环境变量和 URL 反代设置不能覆盖该策略 |
-| 出口顺序 | 按目标散列排序，支持配置并发拨号 | 固定主候选优先，反代拨号并发锁定为 1 |
-| 全部失败 | 含可配置兜底路径 | 断开连接，不转为目标直连或其他出口 |
-| 管理凭据 | 可用多个变量别名或 KEY/UUID 代替 ADMIN | 必须设置 ADMIN；KEY/UUID 不能代替管理员密码 |
-| TCP 连接 | 依赖 request.fetcher.connect | 使用 cloudflare:sockets 的 connect |
-| 原生订阅 | 多客户端格式，含外部订阅转换 | 本服务直接生成 Clash 和 VLESS/SS 通用订阅，不调用外部转换器 |
-| 客户端自动切换 | 通用订阅行为 | Mihomo fallback：VLESS 优先、SS 备用，每 300 秒检查 |
-| 健康与版本 | 无本分支版本接口 | /healthz 检查 ADMIN、KV 和发布提交编号 |
-| 上游同步 | 原仓库同步工作流 | 获取明确上游提交、重应用定制策略、测试后原子更新 main |
-| 发布 | 可通过 Pages 原生 Git 构建或上传 | GitHub Actions 打包固定提交，生产发布经过所有者审批 |
+| Mihomo / Clash Meta | target=clash，可选 region=US | “地区选择”默认排在首位的是默认地区；每区 VLESS 优先、SS 备用 |
+| v2rayA / VLESS 客户端 | target=mixed&protocol=vless，可选 region=US | 导入订阅并选择对应地区节点，开启客户端代理 |
+| SS 客户端 | target=mixed&protocol=ss，可选 region=US | 需支持 v2ray-plugin WebSocket + TLS |
 
-当前源码基于上游提交 [`a8ab11125ece`](https://github.com/cmliu/edgetunnel/commit/a8ab11125ece9bc27983f609a6359be81b21050c)。版本锁随同步更新；比较口径和对应源码见[差异文档](docs/上游差异.md)。
+未指定订阅 region 时包含全部配置地区，默认地区排第一；指定后只包含该地区。节点路径包含固定 region，所以更改默认地区不会悄悄改变已有节点的地区。未指定 region 的旧代理连接使用当前默认地区；未知、空或重复参数返回 400。
 
-## 当前部署与验证
+服务器每个连接按该地区的出口顺序尝试，拨号全部失败则关闭连接。Mihomo 在每区 VLESS/SS 之间检查连通性：Cloudflare trace、HTTP 200、每 300 秒检查，没有 DIRECT。地区选择组不会自动跨区切换。通用订阅不替所有客户端配置自动协议切换。
 
-2026-10-09 的验收记录：
+本分支代理仅支持 TCP，UDP/DNS 隧道请求会被关闭，避免绕过地区出口。SS 默认 aes-128-gcm，端口 443，WSS/TLS 开启、mux 关闭，插件 path 同时包含 enc 和 region。旧版 Clash 不支持完整 VLESS 配置。仅原生提供 Clash/mixed，其余订阅格式返回 400，不发送节点凭据到外部转换器。
 
-| 项目 | 结果 |
+## 当前项目与发布
+
+保留现有 Pages 项目 **naiops-us-github**、域名 **us.naiops.ccwu.cc** 和已有 KV，不新建 Cloudflare 项目。此项目采用直接上传，名字带 GitHub 不表示原生仓库绑定。直接上传项目无法追加原生 Git 连接，见 [Cloudflare 限制](https://developers.cloudflare.com/pages/get-started/direct-upload/)。
+
+| 配置 | 位置与用途 |
 | --- | --- |
-| Pages 项目 | naiops-us-github |
-| 服务域名 | us.naiops.ccwu.cc，域名和证书 active |
-| 已发布源码提交 | 9efa77852427d5fed7e3aba2cef9b089337dc956 |
-| 真实 VLESS / SS 链路 | 均 HTTP 200、TLS 校验通过、出口 3.132.174.45、国家 US |
-| 自动化测试 | 11 项 Python + 17 项 Node，共 28 项通过 |
-| 故障切换 | 顺序、主失败和全失败已通过模拟回归；真实客户端故障切换未验收 |
-| ChatGPT 登录 | 程序无登录探测返回 403；未进行账号登录验收 |
-| 后续 GitHub 发布 | 准备流程已安装；发布开关关闭，保护环境 Token 尚待配置 |
+| ADMIN | Cloudflare 机密环境变量，管理员登录；缺失返回 503 |
+| HOST | Cloudflare 文本变量，当前 us.naiops.ccwu.cc |
+| KV | Cloudflare KV 绑定，变量名 KV；保存项目与区域配置 |
+| fail_open | 当前部署配置 false |
 
-这里的美国候选是固定列表，不是持续地理位置检测或自动全网优选。免费共享出口的国家、可用性和 IP 信誉可能变化；检测通过不能保证 ChatGPT 登录成功。
+ADMIN 不是 SS 节点密码。UUID/KEY 可用于节点身份派生，但不能替代 ADMIN。旧管理页的用量查询 API 凭据不等于 GitHub 发布授权；默认手动发布无需创建或配置任何 Cloudflare API Token。
 
-## 登录与客户端使用
+默认流程：**GitHub Actions 手动测试打包 → 下载部署 ZIP → 登录 Cloudflare 当前项目上传 → 你点击 Save and Deploy**。
 
-打开 [管理登录页](https://us.naiops.ccwu.cc/login)，使用 Cloudflare 中的 ADMIN 密码。面板 UUID 是节点凭据；ADMIN 不是 SS 节点密码。密码、UUID 和完整订阅 token 不写入本仓库。
+打开 [Prepare release (manual)](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/deploy.yml)，点 Run workflow，选择 main，revision 可留空。运行成功后下载 `naiops-release-提交编号` 附件；解开下载的外层附件 ZIP，再上传其中的 **naiops-us-pages.zip**。附带 `release-manifest.json` 记录准确版本和 worker SHA256。不要上传 GitHub 源码 ZIP 或整个外层附件。
 
-使用完整私密订阅地址，保留其 token，再选择以下参数：
+在当前 Cloudflare 项目选择 Create a new deployment → Production → 上传部署 ZIP → Save and Deploy。发布后 `/healthz` 的 revision 应与清单一致。完整步骤见[发布说明](docs/自动同步与授权发布.md)。
 
-| 客户端 | 订阅参数 | 使用方法 |
-| --- | --- | --- |
-| Mihomo / Clash Meta | target=clash | 添加 URL 订阅，启用配置，选择“美国故障切换”，打开系统代理或 TUN |
-| v2rayA / VLESS 客户端 | target=mixed&protocol=vless | 导入订阅、更新、选择 US-VLESS，然后开启客户端代理 |
-| SS 客户端 | target=mixed&protocol=ss | 导入订阅或单条 ss:// 链接，客户端必须支持 v2ray-plugin WebSocket + TLS |
-
-旧版 Clash 不支持这份完整 VLESS 配置。SS 默认 aes-128-gcm、端口 443，插件 path 为 `/?enc=aes-128-gcm`，TLS 开启、mux 关闭。通用订阅只提供节点，不会自动为所有客户端开启代理或协议切换。
-
-本分支不原生输出 Sing-box、Surge 等格式；请求这些格式返回 400。上游其他协议实现仍留在源码中，但未作为本分支原生订阅的交付或实测支持。管理页面沿用上游页面，部分反代和订阅选项不会覆盖这里的定制策略。
-
-## 自动切换的两层行为
-
-服务端固定先拨号 `3.132.174.45:443`，失败后尝试 `192.3.208.192:443`；全部失败则断开。ChatGPT 及登录相关域名使用同一候选顺序。切换由 TCP 拨号失败触发，不会根据 HTTP 403 自动更换出口。
-
-Mihomo 配置另有“美国故障切换”组，先选 VLESS，失效时选择 SS；两种协议共用一个 Pages 项目。健康检测为 `https://www.cloudflare.com/cdn-cgi/trace`，要求 HTTP 200，每 300 秒检查，没有 DIRECT 兜底。
-
-连接客户端后，在同一代理浏览器打开检测地址确认 `loc=US`，再验证 ChatGPT 页面和账号登录。真实故障切换和账号登录仍需另行验收。
-
-## Cloudflare 配置与发布
-
-当前发布目标是 Pages 项目 **naiops-us-github**。必需配置如下，值在 Cloudflare 设置中维护：
-
-| 配置 | 类型 | 要求 |
-| --- | --- | --- |
-| ADMIN | 机密环境变量 | 强管理员密码；缺失时服务返回 503 |
-| HOST | 文本环境变量 | us.naiops.ccwu.cc |
-| KV | KV 绑定 | 绑定配置存储命名空间，变量名为 KV |
-| fail_open | 部署配置 | false |
-
-生产和预览应分别核对这些配置；修改变量后需要重新部署才能用于运行环境。可选 UUID/KEY 仍用于节点身份派生，不能替代 ADMIN；变更相关凭据后需重新确认节点和订阅地址。
-
-后续发布入口：GitHub Actions → **Release after owner approval**。prepare 按明确的 40 位 main 提交生成部署 ZIP、来源记录和 SHA256；启用发布后，deploy 在 cloudflare-production 环境等待所有者审核。main 在等待期间更新，不会改变已经待审批的包。
-
-一次性启用需要在保护环境配置 `CLOUDFLARE_API_TOKEN`，再把仓库变量 `CLOUDFLARE_DEPLOY_ENABLED` 设为 true。每次真实发布仍须审核；[详细操作](docs/自动同步与授权发布.md)说明了权限、附件下载和批准步骤。
-
-应上传工作流生成的部署 ZIP，而非整个 GitHub 源码压缩包或上游 main.zip。Pages 原生自动构建不会执行这套人工审批流程；当前采用 GitHub Actions → Wrangler → Pages。
-
-旧项目 naiops-us 保留，其 8000119 限制原因尚未由平台说明，原生 Git 自动构建已暂停；当前服务域名已迁移到新项目。
+可选 GitHub 自动上传仍默认关闭。只有主动配置保护环境 Token 并开启 CLOUDFLARE_DEPLOY_ENABLED，才会进入要求所有者批准的 deploy job；本轮不配置 Token、不启用此开关。测试和下载包不会读取 Cloudflare 凭据。
 
 ## 同步、修改与测试
 
-每日北京时间约 08:20，同步工作流获取 cmliu/edgetunnel/main。只更新上游 worker 快照、版本锁和生成 worker，保留本项目 README、工作流与策略。上游没有更新时不会生成新提交。
+`main` 是我们的定制版本。每天北京时间约 08:20 自动获取锁定来源的上游更新、应用本地策略并测试，通过后原子更新 upstream-candidate 和 main；不强制推送，不触发发布。计划任务可能延后。不要使用 Sync fork 将整份上游覆盖到定制 main。
 
-新增版本经验证后，一次原子推送更新 upstream-candidate 与 main，不强制推送；随后触发发布准备。代码锚点变化、许可证变化、测试失败或 main 并发更新时停止。GitHub 定时任务可能延后。不要用 Sync fork 将完整上游覆盖到本项目 main。
-
-定制策略主要位于 [policy/us-only.js](policy/us-only.js)，出口常量和生成规则位于 [scripts/apply-us-policy.py](scripts/apply-us-policy.py)。修改后重新生成并运行验证：
+策略在 [policy/regions.js](policy/regions.js)，页面在 [policy/regions.html](policy/regions.html)，生成入口保留原名 [scripts/apply-us-policy.py](scripts/apply-us-policy.py)。修改这些来源文件后：
 
 ```sh
 python3 scripts/apply-us-policy.py upstream/_worker.js _worker.js
 bash scripts/verify.sh
 ```
 
-只修改生成的 _worker.js 会被一致性检查拒绝。普通 CI 不读取 Cloudflare 密钥；测试检查策略、认证、订阅、生成一致性、审批规则和准确版本号，不能代替真实出口或账号登录验收。
+只改生成的 `_worker.js` 会被一致性校验拒绝。同步只更新原始 worker、版本锁和生成 worker，保留我们的策略、页面、文档和工作流。锚点变化、许可证变化、测试失败或并发更新时停止。
 
-| 路径 | 用途 |
-| --- | --- |
-| upstream/_worker.js、upstream/version.json | 原始源码快照、导入提交和 SHA256 |
-| policy/us-only.js、scripts/apply-us-policy.py | 本项目定制策略及生成入口 |
-| _worker.js | 生成后的部署源码 |
-| tests/、scripts/verify.sh | 回归和验证入口 |
-| .github/workflows/ci.yml、sync.yml、deploy.yml | 测试、同步、审批发布 |
-| scripts/build-release.py、check-live-release.py | 固定版本打包、上线版本核对 |
+## 验证范围
+
+本次区域版本通过来源与生成一致性、语法检查及区域/认证/存储/订阅/代理/发布回归。GitHub CI 结果以 Actions 为准。地区页面的本地浏览器验证不等于 Cloudflare 上线验证。
+
+2026-10-09，线上仍是此前固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，真实 VLESS/SS 曾通过 TLS、HTTP 200 和 US 出口检查。本次区域版本需由你批准发布后才能在域名上使用。真实客户端故障切换与 ChatGPT 账号登录未验收；无登录程序探测曾返回 403。
 
 ## 来源与许可证
 
-本项目沿用仓库 [LICENSE](LICENSE)，基于 cmliu/edgetunnel 的相关实现。原作者、上游引用项目及通用功能说明见[固定上游版本的 README](https://github.com/cmliu/edgetunnel/blob/a8ab11125ece9bc27983f609a6359be81b21050c/README.md)。使用本分支时，以这里的定制行为和验证范围为准。
+沿用 [LICENSE](LICENSE)。原作者和通用实现参考[固定上游 README](https://github.com/cmliu/edgetunnel/blob/a8ab11125ece9bc27983f609a6359be81b21050c/README.md)。原始 worker 快照和 SHA256 保存在 upstream/，用于可重复生成；原上游的其他协议实现仍保留，已交付的原生订阅与实测协议为 VLESS/SS。

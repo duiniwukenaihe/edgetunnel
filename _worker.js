@@ -41,6 +41,9 @@ export default {
 		const hosts = env.HOST ? (await 整理成数组(env.HOST)).map(h => h.toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0]) : [url.hostname];
 		const host = hosts[0];
 		const 访问路径 = url.pathname.slice(1).toLowerCase();
+		if (['admin', 'admin/regions', 'admin/regions.json'].includes(访问路径) &&
+			(!env.KV || typeof env.KV.get !== 'function' || typeof env.KV.put !== 'function'))
+			return 区域错误响应(区域错误('配置存储 KV 不可用。', 503));
 		调试日志打印 = ['1', 'true'].includes(env.DEBUG) || 调试日志打印;
 		预加载竞速拨号 = ['1', 'true'].includes(env.PRELOAD_RACE_DIAL) || 预加载竞速拨号;
 		反代并发拨号数 = 1;
@@ -72,11 +75,15 @@ export default {
 				if (请求前8总和 === 目标前8总和 && 请求UUID.slice(-12) === 目标UUID.slice(-12)) return new Response(JSON.stringify({ Version: EDT_版本号 }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 			}
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-			const 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底);
+			let 反代上下文;
+			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env); }
+			catch (error) { return 区域错误响应(error); }
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url, 反代上下文);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/叉HTTP代理
-			const 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底);
+			let 反代上下文;
+			try { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env); }
+			catch (error) { return 区域错误响应(error); }
 			const 命中叉HTTP特征 = !!request.headers.get(本机标识头) || !!url.searchParams.get(本机标识键);
 			if (!命中叉HTTP特征 && contentType.startsWith('application/grpc')) {
 				log(`[gRPC] 命中请求: ${url.pathname}${url.search}`);
@@ -114,6 +121,8 @@ export default {
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
 					// 没有cookie或cookie错误，跳转到/login页面
 					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+					if (访问路径 === 'admin') return new Response(null, { status: 302, headers: { Location: '/admin/regions' } });
+					if (访问路径 === 'admin/regions' || 访问路径 === 'admin/regions.json') return await 处理区域管理(request, env, url, host, userID);
 					if (访问路径 === 'admin/log.json') {// 读取日志内容
 						const 读取日志内容 = await env.KV.get('log.json') || '[]';
 						return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -318,7 +327,10 @@ export default {
 					]);
 					const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
 					if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
-						config_JSON = await 读取config_JSON(env, host, userID, UA);
+						const config_JSON = await 读取config_JSON(env, host, userID, UA);
+						let 区域配置, 订阅地区;
+						try { 区域配置 = await 读取区域配置(env); 订阅地区 = url.searchParams.has('region') ? 选择区域(区域配置, url) : null; }
+						catch (error) { return 区域错误响应(error); }
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
 						const ua = UA.toLowerCase();
@@ -355,11 +367,11 @@ export default {
 						if (!['clash', 'mixed'].includes(订阅类型)) return new Response('请使用 target=clash 或 target=mixed。', { status: 400 });
 						if (订阅类型 === 'clash') {
 							responseHeaders['content-type'] = 'application/yaml; charset=utf-8';
-							return new Response(生成美国Clash订阅(config_JSON), { status: 200, headers: responseHeaders });
+							return new Response(生成区域Clash订阅(config_JSON, 区域配置, 订阅地区), { status: 200, headers: responseHeaders });
 						}
 						const 协议类型 = url.searchParams.get('protocol') || config_JSON.协议类型;
 						if (!['vless', 'ss'].includes(协议类型)) return new Response('请使用 protocol=vless 或 protocol=ss。', { status: 400 });
-						const link = 生成美国通用订阅(config_JSON, 协议类型);
+						const link = 生成区域通用订阅(config_JSON, 协议类型, 区域配置, 订阅地区);
 						const body = (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64')) ? btoa(link) : link;
 						return new Response(body, { status: 200, headers: responseHeaders });
 						let 订阅内容 = '';
@@ -2480,45 +2492,9 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 }
 
 async function forwardataudp(udpChunk, webSocket, respHeader, request, 响应封装器 = null) {
-	const 请求数据 = 数据转Uint8Array(udpChunk);
-	const 请求字节数 = 请求数据.byteLength;
-	log(`[UDP转发] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
-	try {
-		const TCP连接 = 创建请求TCP连接器(request);
-		const tcpSocket = TCP连接({ hostname: '8.8.4.4', port: 53 });
-		let 魏烈思Header = respHeader;
-		const writer = tcpSocket.writable.getWriter();
-		await writer.write(请求数据);
-		log(`[UDP转发] DNS 请求已写入上游: ${请求字节数}B`);
-		writer.releaseLock();
-		await tcpSocket.readable.pipeTo(new WritableStream({
-			async write(chunk) {
-				const 原始响应 = 数据转Uint8Array(chunk);
-				log(`[UDP转发] 收到 DNS 响应: ${原始响应.byteLength}B`);
-				const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
-				const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
-				if (!发送片段列表.length) return;
-				if (webSocket.readyState !== WebSocket.OPEN) return;
-				for (const fragment of 发送片段列表) {
-					const 转发响应 = 数据转Uint8Array(fragment);
-					if (!转发响应.byteLength) continue;
-					if (魏烈思Header) {
-						const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
-						response.set(魏烈思Header, 0);
-						response.set(转发响应, 魏烈思Header.length);
-						await WebSocket发送并等待(webSocket, response.buffer);
-						魏烈思Header = null;
-					} else {
-						await WebSocket发送并等待(webSocket, 转发响应);
-					}
-				}
-			},
-		}));
-	} catch (error) {
-		log(`[UDP转发] DNS 转发失败: ${error?.message || error}`);
-	}
+	closeSocketQuietly(webSocket);
+	throw new Error('本分支仅支持 TCP，UDP/DNS 转发已禁用。');
 }
-
 function closeSocketQuietly(socket) {
 	try {
 		if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
@@ -5607,6 +5583,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 }
 
 async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {
+	let config_JSON;
 	const _p = 特征码字典[0];
 	const host = hostname, Ali_DoH = "https://dns.alidns.com/dns-query", ECH_SNI = "cloudflare-ech.com", 占位符 = '{{IP:PORT}}', 初始化开始时间 = performance.now(), 默认配置JSON = {
 		TIME: new Date().toISOString(),
@@ -6182,43 +6159,154 @@ async function 请求优选API(urls, 默认端口 = '443', uid = "000000", 超�
 	return [Array.from(results), LINK数组, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-function 生成美国通用订阅(config, protocol) {
-	const host = config.HOST, uuid = config.UUID;
-	if (protocol === 'ss') {
-		const cipher = config.SS?.加密方式 || 'aes-128-gcm';
-		const plugin = `v2ray-plugin;mode=websocket;host=${host};path=/?enc=${cipher};tls;mux=0`;
-		return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#US-SS`;
-	}
-	const params = new URLSearchParams({ security: 'tls', type: 'ws', host, sni: host,
-		path: '/', encryption: 'none', fp: 'chrome' });
-	return `vless://${uuid}@${host}:443?${params}#US-VLESS`;
+const 区域管理页面 = "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>naiops · 区域配置</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:32px auto;padding:0 20px}header,section{background:white;border:1px solid #dce3eb;border-radius:12px;padding:22px;margin-bottom:18px}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 12px;font-size:20px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer;margin-right:8px}button:disabled{opacity:.5;cursor:wait}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint{color:#526172;font-size:14px}#status{white-space:pre-wrap;min-height:26px}.error{color:#a32222}.success{color:#14683b}#links input{font:13px/1.6 monospace}.actions{position:sticky;bottom:0;background:#f4f6fa;padding:12px 0}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}nav{display:flex;gap:20px;margin-top:12px}@media(max-width:600px){.row{grid-template-columns:1fr;gap:0}main{padding:0 12px}}\n</style>\n<main>\n<header><h1>区域配置</h1><p>默认使用美国。添加你已验证的地区出口，客户端只在所选地区内切换；全部失败会断开。</p><nav><a href=\"/admin/settings\">原有设置</a><a href=\"/logout\">退出登录</a></nav></header>\n<form id=\"form\"><section><h2>地区与出口</h2><label>默认地区<select id=\"defaultRegion\" required></select></label><div id=\"regions\"></div><button type=\"button\" id=\"add\">添加地区</button><p class=\"hint\">出口按顺序逐行填写 IP:端口，IPv6 使用 [IPv6]:端口。每区最多 8 个，先填主出口，再填备用。保存不验证国家或 ChatGPT 可用性，请先通过实际代理连接检查。</p></section>\n<div class=\"actions\"><button id=\"save\" type=\"submit\" disabled>保存配置</button><button id=\"reload\" type=\"button\">重新读取</button><div id=\"status\" role=\"status\" aria-live=\"polite\">正在读取配置…</div></div></form>\n<section id=\"links\" hidden><h2>客户端订阅</h2><p class=\"hint\">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；通用客户端按其自身功能选节点。保存后更新客户端订阅。</p><label>订阅范围<select id=\"scope\"><option value=\"\">全部已配置地区</option></select></label><div id=\"addresses\"></div></section>\n</main>\n<script>\n'use strict';\nconst $=id=>document.getElementById(id);\nlet subscriptions={}, loading=false;\nfunction status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}\nfunction regionRows(){return [...document.querySelectorAll('.region')];}\nfunction updateDefaults(selected=$('defaultRegion').value){\n const defaults=$('defaultRegion');defaults.replaceChildren();\n for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}\n if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;\n}\nfunction addRegion(region={code:'',name:'',exits:[]}){\n const row=document.createElement('div');row.className='region';\n row.innerHTML='<div class=\"row\"><label>地区代码<input class=\"code\" maxlength=\"2\" pattern=\"[A-Z]{2}\" placeholder=\"US\" required></label><label>地区名称<input class=\"name\" maxlength=\"32\" placeholder=\"美国\" required></label></div><label>出口（每行一个，按主备顺序）<textarea class=\"exits\" placeholder=\"IP:端口\" required></textarea></label><button type=\"button\" class=\"remove\">删除地区</button>';\n row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\\n');\n row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();updateDefaults();});\n row.querySelector('.name').addEventListener('input',()=>updateDefaults());\n row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};\n $('regions').append(row);updateDefaults();\n}\nfunction showLinks(config){\n const scope=$('scope');const selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));\n for(const region of config.regions)scope.append(new Option(region.code+' · '+region.name,region.code));\n if(config.regions.some(r=>r.code===selected))scope.value=selected;\n $('links').hidden=false;renderLinks();\n}\nfunction renderLinks(){\n $('addresses').replaceChildren();\n for(const [type,label] of [['clash','Mihomo / Clash Meta'],['vless','VLESS / v2rayA'],['ss','SS（需 v2ray-plugin）']]){\n const address=new URL(subscriptions[type]);if($('scope').value)address.searchParams.set('region',$('scope').value);\n const field=document.createElement('label');field.textContent=label;const input=document.createElement('input');input.readOnly=true;input.value=address.href;input.onclick=()=>input.select();field.append(input);\n const copy=document.createElement('button');copy.type='button';copy.textContent='复制地址';copy.onclick=async()=>{try{await navigator.clipboard.writeText(input.value);status('已复制订阅地址。');}catch{input.select();status('请复制已选中的地址。');}};\n $('addresses').append(field,copy);\n }\n}\nasync function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}\nasync function read(){\n if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');\n try{const data=await api();subscriptions=data.subscriptions;$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');}\n catch(error){status(error.message,true);if(!regionRows().length){addRegion({code:'US',name:'美国',exits:['3.132.174.45:443','192.3.208.192:443']});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}\n finally{loading=false;$('save').disabled=false;}\n}\n$('form').onsubmit=async event=>{\n event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;\n const config={version:1,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean)}))};\n status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}\n};\n$('add').onclick=()=>addRegion();$('reload').onclick=read;$('scope').onchange=renderLinks;read();\n</script>\n</html>\n";
+function 默认区域配置() {
+	return { version: 1, defaultRegion: 'US', regions: [
+		{ code: 'US', name: '美国', exits: 美国出口.split(',') }
+	] };
 }
 
-function 生成美国Clash订阅(config) {
+function 区域错误(message, status = 400) {
+	return Object.assign(new Error(message), { status });
+}
+
+function 区域错误响应(error) {
+	return Response.json({ error: error.message }, { status: error.status || 503,
+		headers: { 'Cache-Control': 'no-store' } });
+}
+
+function 验证区域配置(input) {
+	if (!input || input.version !== 1 || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
+		throw 区域错误('需要 1–16 个区域，配置版本必须为 1。');
+	const codes = new Set(), names = new Set();
+	const regions = input.regions.map(region => {
+		if (!region || typeof region.code !== 'string' || !/^[A-Z]{2}$/.test(region.code) || codes.has(region.code))
+			throw 区域错误('区域代码必须是唯一的两位大写字母。');
+		const name = typeof region.name === 'string' ? region.name.trim() : '';
+		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name))
+			throw 区域错误('区域名称须唯一、非空且不超过 32 字符。');
+		if (!Array.isArray(region.exits) || region.exits.length < 1 || region.exits.length > 8)
+			throw 区域错误('每区需要 1–8 个有序出口。');
+		const exits = region.exits.map(exit => {
+			const match = typeof exit === 'string' && exit.trim().match(/^(\[[0-9a-fA-F:.]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/);
+			if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535)
+				throw 区域错误('出口须为 IPv4:端口 或 [IPv6]:端口，端口为 1–65535。');
+			let hostname = match[1];
+			if (hostname.startsWith('[')) {
+				try { hostname = new URL('http://' + hostname + '/').hostname; }
+				catch { throw 区域错误('IPv6 地址无效。'); }
+			} else if (!hostname.split('.').every(part => Number(part) <= 255 && String(Number(part)) === part)) {
+				throw 区域错误('IPv4 地址无效。');
+			}
+			return hostname + ':' + Number(match[2]);
+		});
+		if (new Set(exits).size !== exits.length) throw 区域错误('同一区域的出口不能重复。');
+		codes.add(region.code); names.add(name);
+		return { code: region.code, name, exits };
+	});
+	if (!codes.has(input.defaultRegion)) throw 区域错误('默认区域必须在已配置区域中。');
+	return { version: 1, defaultRegion: input.defaultRegion, regions };
+}
+
+async function 读取区域配置(env) {
+	if (!env?.KV || typeof env.KV.get !== 'function') throw 区域错误('配置存储 KV 不可用。', 503);
+	try {
+		const stored = await env.KV.get('regions.json');
+		return stored === null ? 默认区域配置() : 验证区域配置(JSON.parse(stored));
+	} catch {
+		throw 区域错误('区域配置损坏或读取失败，请在管理面板修复。', 503);
+	}
+}
+
+function 选择区域(config, url) {
+	const values = url.searchParams.getAll('region');
+	if (values.length > 1 || (values.length === 1 && !/^[a-zA-Z]{2}$/.test(values[0])))
+		throw 区域错误('region 参数必须是单个两位区域代码。');
+	const code = values.length ? values[0].toUpperCase() : config.defaultRegion;
+	const region = config.regions.find(region => region.code === code);
+	if (!region) throw 区域错误('所选区域不存在，请更新订阅或在面板中配置。');
+	return region;
+}
+
+function 订阅区域列表(config, selected) {
+	return selected ? [selected] : [config.regions.find(r => r.code === config.defaultRegion),
+		...config.regions.filter(r => r.code !== config.defaultRegion)];
+}
+
+function 生成区域通用订阅(config, protocol, regions = 默认区域配置(), selected = null) {
 	const host = config.HOST, uuid = config.UUID;
-	const cipher = config.SS?.加密方式 || 'aes-128-gcm';
-	const vlessName = '美国-VLESS', ssName = '美国-SS';
-	return JSON.stringify({
-		'mixed-port': 7890, 'allow-lan': false, mode: 'rule', 'log-level': 'warning',
-		proxies: [
+	return 订阅区域列表(regions, selected).map(region => {
+		if (protocol === 'ss') {
+			const cipher = config.SS?.加密方式 || 'aes-128-gcm';
+			const plugin = `v2ray-plugin;mode=websocket;host=${host};path=/?enc=${cipher}&region=${region.code};tls;mux=0`;
+			return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#${region.code}-SS`;
+		}
+		const params = new URLSearchParams({ security: 'tls', type: 'ws', host, sni: host,
+			path: '/?region=' + region.code, encryption: 'none', fp: 'chrome' });
+		return `vless://${uuid}@${host}:443?${params}#${region.code}-VLESS`;
+	}).join('\n');
+}
+
+function 生成区域Clash订阅(config, regions = 默认区域配置(), selected = null) {
+	const host = config.HOST, uuid = config.UUID, cipher = config.SS?.加密方式 || 'aes-128-gcm';
+	const proxies = [], groups = [];
+	for (const region of 订阅区域列表(regions, selected)) {
+		const vlessName = region.code + '-VLESS', ssName = region.code + '-SS';
+		proxies.push(
 			{ name: vlessName, type: 'vless', server: host, port: 443, uuid, tls: true,
 				udp: false, servername: host, network: 'ws', 'client-fingerprint': 'chrome',
-				'ws-opts': { path: '/', headers: { Host: host } } },
+				'ws-opts': { path: '/?region=' + region.code, headers: { Host: host } } },
 			{ name: ssName, type: 'ss', server: host, port: 443, cipher, password: uuid,
-				udp: false, plugin: 'v2ray-plugin', 'plugin-opts': {
-					mode: 'websocket', tls: true, host, path: '/?enc=' + cipher, mux: false } }
-		],
-		'proxy-groups': [{ name: '美国故障切换', type: 'fallback', proxies: [vlessName, ssName],
-			url: 'https://www.cloudflare.com/cdn-cgi/trace', 'expected-status': 200,
-			interval: 300, lazy: false }],
-		rules: ['MATCH,美国故障切换']
-	}, null, 2);
+				udp: false, plugin: 'v2ray-plugin', 'plugin-opts': { mode: 'websocket', tls: true,
+					host, path: '/?enc=' + cipher + '&region=' + region.code, mux: false } }
+		);
+		groups.push({ name: region.code + ' · ' + region.name + '自动切换', type: 'fallback',
+			proxies: [vlessName, ssName], url: 'https://www.cloudflare.com/cdn-cgi/trace',
+			'expected-status': 200, interval: 300, lazy: false });
+	}
+	return JSON.stringify({ 'mixed-port': 7890, 'allow-lan': false, mode: 'rule', 'log-level': 'warning',
+		proxies, 'proxy-groups': [{ name: '地区选择', type: 'select', proxies: groups.map(g => g.name) }, ...groups],
+		rules: ['MATCH,地区选择'] }, null, 2);
 }
 
-async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true) {
-	// 禁止 URL、KV 或默认直连绕过经过验证的美国出口。
-	return { 木马反代地址: null, 反代IP: 美国出口, 代理类型: 'proxyip',
+async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env) {
+	// 旧签名仍用于独立策略调用；所有真实代理入口明确传入 env。
+	const config = env === undefined ? 默认区域配置() : await 读取区域配置(env);
+	const region = 选择区域(config, url);
+	return { 木马反代地址: null, 反代IP: region.exits.join(','), 代理类型: 'proxyip',
 		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false };
+}
+
+async function 处理区域管理(request, env, url, host, uuid) {
+	const headers = { 'Cache-Control': 'no-store' };
+	if (url.pathname === '/admin/regions') {
+		if (request.method !== 'GET') return new Response('仅支持 GET。', { status: 405, headers });
+		return new Response(区域管理页面, { headers: { ...headers, 'Content-Type': 'text/html;charset=utf-8',
+			'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+			'X-Content-Type-Options': 'nosniff' } });
+	}
+	if (request.method === 'POST') {
+		if (request.headers.get('Origin') !== url.origin || !/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || ''))
+			return 区域错误响应(区域错误('保存需要同源 JSON 请求。', 403));
+		let config;
+		try { config = 验证区域配置(await request.json()); }
+		catch (error) { return 区域错误响应(区域错误(error instanceof SyntaxError ? 'JSON 格式无效。' : error.message)); }
+		try { await env.KV.put('regions.json', JSON.stringify(config)); }
+		catch { return 区域错误响应(区域错误('区域配置保存失败，请稍后重试。', 503)); }
+		return Response.json({ success: true, config, message: '配置已保存；各地 KV 更新可能需要约一分钟，已有连接继续使用原出口。' }, { headers });
+	}
+	if (request.method !== 'GET') return new Response('仅支持 GET 或 POST。', { status: 405, headers });
+	try {
+		const config = await 读取区域配置(env), token = await MD5MD5(host + uuid);
+		const base = new URL('/sub', url.origin); base.searchParams.set('token', token);
+		const subscription = (target, protocol) => {
+			const address = new URL(base); address.searchParams.set('target', target);
+			if (protocol) address.searchParams.set('protocol', protocol);
+			return address.href;
+		};
+		return Response.json({ config, subscriptions: { clash: subscription('clash'),
+			vless: subscription('mixed', 'vless'), ss: subscription('mixed', 'ss') } }, { headers });
+	} catch (error) { return 区域错误响应(error); }
 }
 const 反代协议默认端口 = { socks5: 1080, http: 80, https: 443, turn: 3478, sstp: 443 };
 function 获取代理默认端口(类型) {

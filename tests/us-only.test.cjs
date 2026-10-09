@@ -1,31 +1,7 @@
-const { readFileSync } = require('node:fs');
-const { resolve } = require('node:path');
-const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { webcrypto, createHash } = require('node:crypto');
+const { load, socket, UUID, POOL } = require('./helpers/worker.cjs');
 
-const SOURCE = process.env.NAIOPS_SOURCE || resolve(__dirname, '../_worker.js');
-const UUID = 'd68a14d0-1429-4da6-b994-1abceba01234';
-const POOL = ['3.132.174.45', '192.3.208.192'];
-function load(connect = () => { throw new Error('unexpected TCP'); }) {
-  const sandbox = { console, URL, URLSearchParams, Headers, Response, Request, TextEncoder, TextDecoder,
-    crypto: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto), subtle: new Proxy(webcrypto.subtle, {
-      get(target, name) { if (name === 'digest') return (algorithm, data) => algorithm === 'MD5'
-        ? Promise.resolve(Uint8Array.from(createHash('md5').update(Buffer.from(data)).digest()).buffer)
-        : target.digest(algorithm, data); const value = target[name]; return typeof value === 'function' ? value.bind(target) : value; }
-    }) }, performance, ReadableStream, WritableStream, TransformStream,
-    setTimeout, clearTimeout, atob, btoa, connect, WebSocket: { OPEN: 1, CLOSING: 2, CLOSED: 3 } };
-  vm.createContext(sandbox);
-  const source = readFileSync(SOURCE, 'utf8').replace(/^\s*import \{ connect \} from ['"]cloudflare:sockets['"];?\s*/m, '')
-    .replace('export default {', 'const worker = {');
-  vm.runInContext(source + '\n globalThis.worker = worker;', sandbox);
-  return sandbox;
-}
-function socket(hostname, unavailable) {
-  return { hostname, opened: unavailable ? Promise.reject(new Error('offline')) : Promise.resolve({}),
-    closed: Promise.resolve(), close() {}, writable: new WritableStream({ write() {} }) };
-}
 async function forward(unavailable = []) {
   const attempts = [];
   const connect = ({ hostname }) => { attempts.push(hostname); return socket(hostname, unavailable.includes(hostname)); };
@@ -153,17 +129,18 @@ test('health checks do not receive a synthetic successful response', async () =>
 });
 test('native Clash contains TLS VLESS and SS and a real fallback group', () => {
   const s = load(); const config = { HOST: 'us.naiops.ccwu.cc', UUID, SS: { 加密方式: 'aes-128-gcm', TLS: true } };
-  const cfg = JSON.parse(s.生成美国Clash订阅(config));
+  const cfg = JSON.parse(s.生成区域Clash订阅(config));
   assert.ok(cfg.proxies.some(p => p.type === 'vless' && p.tls === true));
   assert.ok(cfg.proxies.some(p => p.type === 'ss' && p['plugin-opts'].tls === true));
   assert.ok(cfg['proxy-groups'].some(g => g.type === 'fallback'));
   assert.ok(cfg.proxies.every(p => p.server === 'us.naiops.ccwu.cc'));
   assert.ok(cfg['proxy-groups'].every(g => !g.proxies.includes('DIRECT')));
-  assert.deepEqual(cfg.rules, ['MATCH,美国故障切换']);
+  assert.deepEqual(cfg.rules, ['MATCH,地区选择']);
 });
 test('fallback health probe uses a target reachable through the pinned exits', () => {
   const s = load();
-  const cfg = JSON.parse(s.生成美国Clash订阅({ HOST: 'us.naiops.ccwu.cc', UUID }));
-  assert.equal(cfg['proxy-groups'][0].url, 'https://www.cloudflare.com/cdn-cgi/trace');
-  assert.equal(cfg['proxy-groups'][0]['expected-status'], 200);
+  const cfg = JSON.parse(s.生成区域Clash订阅({ HOST: 'us.naiops.ccwu.cc', UUID }));
+  const fallback = cfg['proxy-groups'].find(group => group.type === 'fallback');
+  assert.equal(fallback.url, 'https://www.cloudflare.com/cdn-cgi/trace');
+  assert.equal(fallback['expected-status'], 200);
 });

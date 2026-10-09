@@ -1,4 +1,5 @@
 """Generate the custom worker; source drift stops before writing the output."""
+import json
 import sys
 from pathlib import Path
 
@@ -22,12 +23,37 @@ def apply_policy(source):
                  "\t\tif (!管理员密码) return new Response('请先在 Cloudflare 设置 ADMIN。', { status: 503, headers: { 'Cache-Control': 'no-store' } });\n"
                  "\t\tif (url.pathname === '/healthz') return Response.json({ status: env.KV ? 'ready' : 'missing-kv', revision: 发布版本 }, { status: env.KV ? 200 : 503, headers: { 'Cache-Control': 'no-store' } });")
     replace_once('反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 反代并发拨号数);', '反代并发拨号数 = 1;')
+    config_reader = 'async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {'
+    replace_once(config_reader, config_reader + '\n\tlet config_JSON;')
+    path_anchor = 'const 访问路径 = url.pathname.slice(1).toLowerCase();'
+    replace_once(path_anchor, path_anchor + "\n\t\tif (['admin', 'admin/regions', 'admin/regions.json'].includes(访问路径) &&\n"
+                 "\t\t\t(!env.KV || typeof env.KV.get !== 'function' || typeof env.KV.put !== 'function'))\n"
+                 "\t\t\treturn 区域错误响应(区域错误('配置存储 KV 不可用。', 503));")
+    proxy_call = 'const 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底);'
+    if result.count(proxy_call) != 2:
+        raise ValueError('Upstream proxy entry points changed; review required')
+    result = result.replace(proxy_call, 'let 反代上下文;\n\t\t\ttry { 反代上下文 = await 反代参数获取(url, userID, 默认反代IP, 默认反代兜底, env); }\n'
+                            '\t\t\tcatch (error) { return 区域错误响应(error); }')
+    auth_anchor = "if (访问路径 === 'admin/log.json') {// 读取日志内容"
+    replace_once(auth_anchor, "if (访问路径 === 'admin') return new Response(null, { status: 302, headers: { Location: '/admin/regions' } });\n"
+                 "\t\t\t\t\tif (访问路径 === 'admin/regions' || 访问路径 === 'admin/regions.json') return await 处理区域管理(request, env, url, host, userID);\n"
+                 '\t\t\t\t\t' + auth_anchor)
+    sub_anchor = "if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {\n\t\t\t\t\t\tconfig_JSON = await 读取config_JSON(env, host, userID, UA);"
+    replace_once(sub_anchor, sub_anchor.replace('config_JSON =', 'const config_JSON =') + "\n\t\t\t\t\t\tlet 区域配置, 订阅地区;\n"
+                 "\t\t\t\t\t\ttry { 区域配置 = await 读取区域配置(env); 订阅地区 = url.searchParams.has('region') ? 选择区域(区域配置, url) : null; }\n"
+                 "\t\t\t\t\t\tcatch (error) { return 区域错误响应(error); }")
     start = result.index('function 创建请求TCP连接器(request) {')
     end = result.index('\n////////////////////////////////////////////TLSClient', start)
     replace_once(result[start:end], 'function 创建请求TCP连接器(request) {\n\treturn connect;\n}')
+    start = result.index('async function forwardataudp(')
+    end = result.index('\nfunction closeSocketQuietly(', start)
+    replace_once(result[start:end], "async function forwardataudp(udpChunk, webSocket, respHeader, request, 响应封装器 = null) {\n"
+                 "\tcloseSocketQuietly(webSocket);\n\tthrow new Error('本分支仅支持 TCP，UDP/DNS 转发已禁用。');\n}")
     start = result.index('async function 反代参数获取(')
     end = result.index('const 反代协议默认端口', start)
-    replace_once(result[start:end], (ROOT / 'policy/us-only.js').read_text())
+    policy = (ROOT / 'policy/regions.js').read_text()
+    panel = json.dumps((ROOT / 'policy/regions.html').read_text(), ensure_ascii=False)
+    replace_once(result[start:end], 'const 区域管理页面 = ' + panel + ';\n' + policy)
     start = result.index('\tconst 排序后数组 = 所有反代数组.sort(')
     end = result.index('\n\tlog(`[反代解析] 解析完成', start)
     replace_once(result[start:end], '\tconst 解析结果 = 所有反代数组.slice(0, 8);')
@@ -36,11 +62,11 @@ def apply_policy(source):
     replace_once(result[start:end], """\t\t\t\t\t\tif (!['clash', 'mixed'].includes(订阅类型)) return new Response('请使用 target=clash 或 target=mixed。', { status: 400 });
 						if (订阅类型 === 'clash') {
 							responseHeaders['content-type'] = 'application/yaml; charset=utf-8';
-							return new Response(生成美国Clash订阅(config_JSON), { status: 200, headers: responseHeaders });
+							return new Response(生成区域Clash订阅(config_JSON, 区域配置, 订阅地区), { status: 200, headers: responseHeaders });
 						}
 						const 协议类型 = url.searchParams.get('protocol') || config_JSON.协议类型;
 						if (!['vless', 'ss'].includes(协议类型)) return new Response('请使用 protocol=vless 或 protocol=ss。', { status: 400 });
-						const link = 生成美国通用订阅(config_JSON, 协议类型);
+						const link = 生成区域通用订阅(config_JSON, 协议类型, 区域配置, 订阅地区);
 						const body = (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64')) ? btoa(link) : link;
 						return new Response(body, { status: 200, headers: responseHeaders });""")
     return result
