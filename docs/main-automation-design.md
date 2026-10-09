@@ -1,3 +1,5 @@
+> 历史美国固定策略方案；当前区域与无密钥手动发布请参阅 [最新设计](superpowers/specs/2026-10-09-region-panel-design.md) 和 [发布说明](自动同步与授权发布.md)。
+
 # main 自动更新与授权发布
 
 用户已确认 main 是自己的定制分支，要求自动同步、测试和推进 main，Cloudflare 发布须由本人授权。

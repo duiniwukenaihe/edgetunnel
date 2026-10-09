@@ -1,7 +1,5 @@
-name: Release after owner approval
+name: Prepare release (manual)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       revision:
@@ -41,7 +39,7 @@ jobs:
           git merge-base --is-ancestor "$REVISION" origin/main
           git checkout --detach "$REVISION"
           printf 'sha=%s\n' "$REVISION" >> "$GITHUB_OUTPUT"
-          echo "Awaiting release authorization for $REVISION" >> "$GITHUB_STEP_SUMMARY"
+          echo "Preparing the manually selected revision $REVISION" >> "$GITHUB_STEP_SUMMARY"
       - name: Verify and build reviewable release
         env:
           REVISION: ${{ steps.revision.outputs.sha }}
@@ -54,12 +52,16 @@ jobs:
           path: ${{ runner.temp }}/naiops-release/
           retention-days: 14
       - name: Check owner-approval environment
+        if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/check-deploy-approval.py
       - name: Explain disabled Cloudflare publishing
         if: vars.CLOUDFLARE_DEPLOY_ENABLED != 'true'
-        run: echo 'Package ready. Cloudflare publishing is disabled until owner token setup and enabling the release switch.' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo 'Package ready. No Cloudflare credentials are needed for this download.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the naiops-release artifact and extract naiops-us-pages.zip. In the existing naiops-us-github Pages project choose Create a new deployment, select Production, upload that ZIP, then Save and Deploy.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'After publishing compare /healthz revision with release-manifest.json. Optional Token publishing remains disabled.' >> "$GITHUB_STEP_SUMMARY"
   deploy:
     needs: prepare
     if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true'
