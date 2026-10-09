@@ -1,7 +1,12 @@
+const 自动地区目录 = [
+	{ code: 'US', name: '美国' }, { code: 'JP', name: '日本' }, { code: 'SG', name: '新加坡' },
+	{ code: 'HK', name: '香港' }, { code: 'DE', name: '德国' }, { code: 'GB', name: '英国' }
+].map(region => ({ ...region, source: 'cmliu-' + region.code.toLowerCase() + '-dns',
+	hostname: 'proxyip.' + region.code.toLowerCase() + '.cmliussss.net' }));
+
 function 默认区域配置() {
-	return { version: 2, defaultRegion: 'US', regions: [
-		{ code: 'US', name: '美国', exits: 美国出口.split(','), auto: true, source: 'cmliu-us-dns' }
-	] };
+	return { version: 3, defaultRegion: 'US', regions: 自动地区目录.map(({ code, name, source }) =>
+		({ code, name, exits: [], auto: true, source })) };
 }
 
 function 区域错误(message, status = 400) {
@@ -14,18 +19,18 @@ function 区域错误响应(error) {
 }
 
 function 验证区域配置(input) {
-	if (!input || ![1, 2].includes(input.version) || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
-		throw 区域错误('需要 1–16 个区域，配置版本必须为 1 或 2。');
+	if (!input || ![1, 2, 3].includes(input.version) || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
+		throw 区域错误('需要 1–16 个区域，配置版本必须为 1、2 或 3。');
 	const codes = new Set(), names = new Set();
 	const regions = input.regions.map(region => {
 		if (!region || typeof region.code !== 'string' || !/^[A-Z]{2}$/.test(region.code) || codes.has(region.code))
 			throw 区域错误('区域代码必须是唯一的两位大写字母。');
 		const name = typeof region.name === 'string' ? region.name.trim() : '';
-		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name))
-			throw 区域错误('区域名称须唯一、非空且不超过 32 字符。');
+		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name) || ['地区选择','DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL'].includes(name) || / · (VLESS|SS)$/.test(name))
+			throw 区域错误('区域名称须唯一、非空且不超过 32 字符，不能与订阅分组或协议节点名称冲突。');
 		const auto = input.version === 1 ? false : region.auto;
-		if (typeof auto !== 'boolean' || (auto && (region.code !== 'US' || region.source !== 'cmliu-us-dns')) ||
-			(!auto && input.version === 2 && region.source !== null)) throw 区域错误('目前仅美国支持自动来源；手动区域的 source 必须为空。');
+		if (typeof auto !== 'boolean' || (auto && !自动地区目录.some(item => item.code === region.code && item.source === region.source)) ||
+			(!auto && input.version !== 1 && region.source !== null)) throw 区域错误('自动来源须与地区目录匹配；手动区域的 source 必须为空。');
 		if (!Array.isArray(region.exits) || region.exits.length < (auto ? 0 : 1) || region.exits.length > 8)
 			throw 区域错误('每区最多 8 个手动候选；未启用自动来源时至少填写一个。');
 		const exits = region.exits.map(exit => 验证公共出口(typeof exit === 'string' ? exit.trim() : exit));
@@ -34,14 +39,21 @@ function 验证区域配置(input) {
 		return { code: region.code, name, exits, auto, source: auto ? region.source : null };
 	});
 	if (!codes.has(input.defaultRegion)) throw 区域错误('默认区域必须在已配置区域中。');
-	return { version: 2, defaultRegion: input.defaultRegion, regions };
+	return { version: 3, defaultRegion: input.defaultRegion, regions };
 }
 
 async function 读取区域配置(env) {
 	if (!env?.KV || typeof env.KV.get !== 'function') throw 区域错误('配置存储 KV 不可用。', 503);
 	try {
 		const stored = await env.KV.get('regions.json');
-		return stored === null ? 默认区域配置() : 验证区域配置(JSON.parse(stored));
+		if (stored === null) return 默认区域配置();
+		const input = JSON.parse(stored), config = 验证区域配置(input);
+		// Upgrade the earlier US-auto defaults in memory; explicit v3 removals stay removed.
+		if (input.version === 2 && config.regions.some(region => region.auto)) {
+			for (const region of 默认区域配置().regions)
+				if (config.regions.length < 16 && !config.regions.some(item => item.code === region.code || item.name === region.name)) config.regions.push(region);
+		}
+		return config;
 	} catch {
 		throw 区域错误('区域配置损坏或读取失败，请在管理面板修复。', 503);
 	}
@@ -68,11 +80,11 @@ function 生成区域通用订阅(config, protocol, regions = 默认区域配置
 		if (protocol === 'ss') {
 			const cipher = config.SS?.加密方式 || 'aes-128-gcm';
 			const plugin = `v2ray-plugin;mode=websocket;host=${host};path=/?enc=${cipher}&region=${region.code};tls;mux=0`;
-			return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#${region.code}-SS`;
+			return `ss://${btoa(cipher + ':' + uuid)}@${host}:443?plugin=${encodeURIComponent(plugin)}#${encodeURIComponent(region.name)}`;
 		}
 		const params = new URLSearchParams({ security: 'tls', type: 'ws', host, sni: host,
 			path: '/?region=' + region.code, encryption: 'none', fp: 'chrome' });
-		return `vless://${uuid}@${host}:443?${params}#${region.code}-VLESS`;
+		return `vless://${uuid}@${host}:443?${params}#${encodeURIComponent(region.name)}`;
 	}).join('\n');
 }
 
@@ -80,7 +92,7 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 	const host = config.HOST, uuid = config.UUID, cipher = config.SS?.加密方式 || 'aes-128-gcm';
 	const proxies = [], groups = [];
 	for (const region of 订阅区域列表(regions, selected)) {
-		const vlessName = region.code + '-VLESS', ssName = region.code + '-SS';
+		const vlessName = region.name + ' · VLESS', ssName = region.name + ' · SS';
 		proxies.push(
 			{ name: vlessName, type: 'vless', server: host, port: 443, uuid, tls: true,
 				udp: false, servername: host, network: 'ws', 'client-fingerprint': 'chrome',
@@ -89,7 +101,7 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 				udp: false, plugin: 'v2ray-plugin', 'plugin-opts': { mode: 'websocket', tls: true,
 					host, path: '/?enc=' + cipher + '&region=' + region.code, mux: false } }
 		);
-		groups.push({ name: region.code + ' · ' + region.name + '自动切换', type: 'fallback',
+		groups.push({ name: region.name, type: 'fallback',
 			proxies: [vlessName, ssName], url: 'https://www.cloudflare.com/cdn-cgi/trace',
 			'expected-status': 200, interval: 300, lazy: false });
 	}
@@ -99,12 +111,11 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 }
 
 async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env, request) {
-	// 旧签名仍用于独立策略调用；所有真实代理入口明确传入 env。
-	const config = env === undefined ? 默认区域配置() : await 读取区域配置(env);
+	const config = await 读取区域配置(env);
 	const region = 选择区域(config, url);
 	return { 木马反代地址: null, 反代IP: region.exits.join(','), 代理类型: 'proxyip',
 		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false,
-		获取验证出口: env === undefined ? null : () => 获取有效区域池(env, region, request || new Request(url.href)) };
+		获取验证出口: () => 获取有效区域池(env, region, request || new Request(url.href)) };
 }
 
 async function 处理区域管理(request, env, url, host, uuid) {
@@ -154,7 +165,7 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			if (protocol) address.searchParams.set('protocol', protocol);
 			return address.href;
 		};
-		return Response.json({ config, subscriptions: { clash: subscription('clash'),
+		return Response.json({ config, sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
 			vless: subscription('mixed', 'vless'), ss: subscription('mixed', 'ss') } }, { headers });
 	} catch (error) { return 区域错误响应(error); }
 }

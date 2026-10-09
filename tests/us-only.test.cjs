@@ -1,6 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { load, socket, UUID, POOL } = require('./helpers/worker.cjs');
+const { load, socket, UUID, POOL, seedVerifiedPool } = require('./helpers/worker.cjs');
+
+async function verifiedContext(s, url) {
+  const config = {version:3,defaultRegion:'US',regions:[{code:'US',name:'美国',exits:POOL.map(ip=>ip+':443'),auto:false,source:null}]};
+  const store = new Map([['regions.json',JSON.stringify(config)]]);
+  const env = {KV:{get:async key=>store.get(key)??null,put:async(key,value)=>store.set(key,value)}};
+  const request = new Request(url.href);
+  await seedVerifiedPool(s,env,config,request);
+  return s.反代参数获取(url,UUID,'',false,env,request);
+}
 
 async function forward(unavailable = []) {
   const attempts = [];
@@ -8,7 +17,7 @@ async function forward(unavailable = []) {
   const s = load(connect);
   const ws = { readyState: 1, close() { this.readyState = 3; } };
   const request = { fetcher: { connect } };
-  const context = await s.反代参数获取(new URL('https://us.naiops.ccwu.cc/?proxyip=203.0.113.1'), UUID);
+  const context = await verifiedContext(s,new URL('https://us.naiops.ccwu.cc/?proxyip=203.0.113.1'));
   const promise = s.forwardataTCP('chatgpt.com', 443, new Uint8Array([1]), ws, null, {}, UUID, request, context, false, null, true);
   return { promise, attempts, ws };
 }
@@ -51,7 +60,7 @@ test('environment concurrency cannot race the backup against the primary', async
   const s = load(({ hostname }) => { attempts.push(hostname); return socket(hostname, false); });
   await s.worker.fetch({ url: 'https://us.naiops.ccwu.cc/version', method: 'GET',
     headers: new Headers(), cf: { colo: 'SJC' } }, { ADMIN: 'unit-test-only', PROXY_CONCURRENT_DIAL: '8' }, {});
-  const context = await s.反代参数获取(new URL('https://us.naiops.ccwu.cc/'), UUID);
+  const context = await verifiedContext(s,new URL('https://us.naiops.ccwu.cc/'));
   const result = await s.forwardataTCP('chatgpt.com', 443, new Uint8Array([1]),
     { readyState: 1, close() {} }, null, {}, UUID, {}, context, false, null, true);
   assert.equal(result.hostname, POOL[0]);
@@ -96,7 +105,7 @@ test('unsupported subscription formats do not call an external converter', async
 });
 test('URL cannot override the pinned US exits or enable direct fallback', async () => {
   const s = load();
-  const c = await s.反代参数获取(new URL('https://us.naiops.ccwu.cc/?proxyip=203.0.113.1&socks5=203.0.113.2:1080'), UUID);
+  const c = await verifiedContext(s,new URL('https://us.naiops.ccwu.cc/?proxyip=203.0.113.1&socks5=203.0.113.2:1080'));
   assert.equal(c.代理类型, 'proxyip'); assert.equal(c.代理全局, true); assert.equal(c.反代兜底, false);
   const addresses = await s.解析地址端口(c.反代IP, 'chatgpt.com', UUID);
   assert.deepEqual(Array.from(addresses, a => a[0]), POOL);
@@ -124,7 +133,7 @@ test('all US exits unavailable fails closed without connecting direct', async ()
   assert.deepEqual(attempts, POOL); assert.equal(ws.readyState, 3);
 });
 test('health checks do not receive a synthetic successful response', async () => {
-  const s = load(); const c = await s.反代参数获取(new URL('https://us.naiops.ccwu.cc/'), UUID);
+  const s = load(); const c = await verifiedContext(s,new URL('https://us.naiops.ccwu.cc/'));
   assert.notEqual(c.代理类型, null);
 });
 test('native Clash contains TLS VLESS and SS and a real fallback group', () => {

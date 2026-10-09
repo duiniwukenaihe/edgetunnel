@@ -13,7 +13,7 @@ function fixture() {
     Date: class extends Date { static now() { return now; } }, 发布版本: 'fixture-release',
     区域错误: (message, status = 400) => Object.assign(new Error(message), { status }) };
   const file = path.resolve(__dirname, '../policy/auto-exits.js');
-  vm.createContext(s); vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../policy/exit-proof.js'), 'utf8') + '\n' + fs.readFileSync(file, 'utf8'), s);
+  vm.createContext(s); vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../policy/regions.js'), 'utf8') + '\n' + fs.readFileSync(path.resolve(__dirname, '../policy/exit-proof.js'), 'utf8') + '\n' + fs.readFileSync(file, 'utf8'), s);
   s.区域错误响应 = error => Response.json({error:error.message},{status:error.status||503});
   const env = { ADMIN: 'test-only-private-key', KV: { get: async key => store.get(key) ?? null,
     put: async (key, value) => { writes.push(key); store.set(key, value); } } };
@@ -208,4 +208,17 @@ test('receipt transport opening failure handles closed rejection and closes the 
   f.s.connect=()=>({opened:Promise.reject(error),closed,close:async()=>{closes++;}});
   await assert.rejects(f.s.读取候选回执('3.132.174.45:443','proof.example.com','a'.repeat(32)),/offline/);
   assert.equal(closedHandled,1);assert.ok(closes>0);
+});
+
+test('every default regional source discovers without manual IPs and remains country isolated', async () => {
+  const f = fixture();
+  f.s.美国出口='';
+  for(const region of f.s.默认区域配置().regions){
+    const requests=[];
+    f.s.fetch=async url=>{requests.push(new URL(url));return Response.json({Status:0,Answer:[{type:1,data:'8.8.8.8'},{type:1,data:'127.0.0.1'}]});};
+    const candidates=await f.s.发现区域候选(region);
+    assert.deepEqual(Array.from(candidates),['8.8.8.8:443']);
+    assert.ok(requests.every(url=>url.searchParams.get('name')===`proxyip.${region.code.toLowerCase()}.cmliussss.net`));
+    await assert.rejects(f.s.发现区域候选({...region,source:'cmliu-other-dns'}),/来源/);
+  }
 });

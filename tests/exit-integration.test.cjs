@@ -25,7 +25,7 @@ function fixture() {
 
 test('v2 defaults discover US; old v1 configuration remains manual and read-only', async () => {
   const f = fixture(); const defaults = await f.s.读取区域配置(f.env);
-  assert.equal(defaults.version, 2); assert.equal(defaults.regions[0].auto, true);
+  assert.equal(defaults.version, 3); assert.equal(defaults.regions[0].auto, true);
   assert.equal(defaults.regions[0].source, 'cmliu-us-dns');
   const old = JSON.stringify({version:1,defaultRegion:'US',regions:[{code:'US',name:'美国',exits:['3.132.174.45:443']}]});
   f.store.set('regions.json', old); const config = await f.s.读取区域配置(f.env);
@@ -71,7 +71,7 @@ test('admin status reads without probes; refresh requires origin, uses region an
   const fresh = await f.request('/admin/exits.json?region=US',options,true);
   assert.equal(fresh.status,200); assert.equal((await fresh.json()).pool.exits[0].country,'US');
   assert.equal((await f.request('/admin/exits.json?region=US',options,true)).status,429);
-  assert.equal((await f.request('/admin/exits.json?region=JP',options,true)).status,400);
+  assert.equal((await f.request('/admin/exits.json?region=FR',options,true)).status,400);
   assert.equal(f.probes.length,1);
 });
 

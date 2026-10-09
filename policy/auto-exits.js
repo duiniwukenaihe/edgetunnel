@@ -53,11 +53,12 @@ async function 有界检测JSON(response) {
 async function 发现区域候选(region, signal, failures = []) {
 	const results = new Set(region.exits.map(验证公共出口));
 	if (region.auto) {
-		if (region.code !== 'US' || region.source !== 'cmliu-us-dns') throw 区域错误('该区域没有受支持的自动来源。');
+		const source = 自动地区目录.find(item => item.code === region.code && item.source === region.source);
+		if (!source) throw 区域错误('该区域没有受支持的自动来源。');
 		for (const type of ['A', 'AAAA']) {
 			if (signal?.aborted) throw new Error('出口发现已取消。');
 			const url = new URL('https://cloudflare-dns.com/dns-query');
-			url.searchParams.set('name', 'proxyip.us.cmliussss.net'); url.searchParams.set('type', type);
+			url.searchParams.set('name', source.hostname); url.searchParams.set('type', type);
 			const controller = new AbortController(), abort = () => controller.abort();
 			const timer = setTimeout(abort, 3000); signal?.addEventListener('abort', abort, { once: true });
 			try {

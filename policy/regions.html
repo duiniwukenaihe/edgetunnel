@@ -7,15 +7,15 @@
 </style>
 <main>
 <header><h1>区域配置</h1><p>默认使用美国，自动发现候选并验证实际出口国家。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href="/admin/settings">原有设置</a><a href="/logout">退出登录</a></nav></header>
-<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><button type="button" id="add">添加地区</button><p class="hint">手动候选填写公共 IP:443 或 [IPv6]:443，每区最多 8 个。保存后仍须通过国家和签名回执检测才能使用。旧配置保持手动模式，可在美国地区启用自动发现。</p></section>
+<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><label>添加自动地区<select id="addRegionSelect"></select></label><button type="button" id="add">添加地区</button><p class="hint">自动获取、检测并更新各地区候选，无需填写 IP。默认先选延迟最低的有效出口，随后保留健康主出口并在故障时切换。没有通过检测的地区会显示不可用。</p></section>
 <div class="actions"><button id="save" type="submit" disabled>保存配置</button><button id="reload" type="button">重新读取</button><div id="status" role="status" aria-live="polite">正在读取配置…</div></div></form>
-<section id="links" hidden><h2>客户端订阅</h2><p class="hint">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；通用客户端按其自身功能选节点。保存后更新客户端订阅。</p><label>订阅范围<select id="scope"><option value="">全部已配置地区</option></select></label><div id="addresses"></div></section>
+<section id="links" hidden><h2>客户端订阅</h2><p class="hint">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；v2rayA 等通用客户端每个地区只有一个入口，区内 IP 优选在服务端自动完成。保存后更新客户端订阅。</p><label>订阅范围<select id="scope"><option value="">全部已配置地区</option></select></label><div id="addresses"></div></section>
 <section><h2>出口检测</h2><label>查看地区<select id="poolRegion"></select></label><button type="button" id="poolRead">读取状态</button><button type="button" id="poolRefresh">立即检测并刷新</button><p class="hint">显示当前访问边缘的检测结果。有认证请求时每 15 分钟更新，30 分钟后过期；无请求时暂停更新。保留健康主出口，刷新不能保证 ChatGPT 登录成功。</p><div id="poolStatus" role="status" aria-live="polite">请先读取区域配置。</div><div id="poolDetails"></div></section>
 </main>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-let subscriptions={}, loading=false, poolLoading=false;
+let subscriptions={}, sources=[], loading=false, poolLoading=false;
 function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}
 function regionRows(){return [...document.querySelectorAll('.region')];}
 function updateDefaults(selected=$('defaultRegion').value){
@@ -23,12 +23,12 @@ function updateDefaults(selected=$('defaultRegion').value){
  for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}
  if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;
 }
-function addRegion(region={code:'',name:'',exits:[]}){
+function addRegion(region){
  const row=document.createElement('div');row.className='region';
- row.innerHTML='<div class="row"><label>地区代码<input class="code" maxlength="2" pattern="[A-Z]{2}" placeholder="US" required></label><label>地区名称<input class="name" maxlength="32" placeholder="美国" required></label></div><label>自动发现<select class="auto"><option value="false">关闭 · 手动候选</option><option value="true">开启 · 美国来源</option></select></label><p class="hint source"></p><label>手动候选（每行一个，按主备顺序）<textarea class="exits" placeholder="公共 IP:443"></textarea></label><button type="button" class="remove">删除地区</button>';
+ row.innerHTML='<div class="row"><label>地区代码<input class="code" maxlength="2" pattern="[A-Z]{2}" placeholder="US" required></label><label>地区名称<input class="name" maxlength="32" placeholder="美国" required></label></div><label>自动发现<select class="auto"><option value="false">关闭 · 手动候选</option><option value="true">开启 · 地区来源</option></select></label><p class="hint source"></p><details><summary>高级：已有手动候选</summary><label>手动候选（每行一个）<textarea class="exits" placeholder="自动模式无需填写"></textarea></label></details><button type="button" class="remove">删除地区</button>';
  row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\n');
  row.querySelector('.auto').value=String(!!region.auto);
- const autoState=()=>{const us=row.querySelector('.code').value==='US';const auto=row.querySelector('.auto');auto.options[1].disabled=!us;if(!us)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动来源：proxyip.us.cmliussss.net（候选仍须实测为美国）':'手动候选也会验证实际出口国家。';};
+ const autoState=()=>{const source=sources.find(item=>item.code===row.querySelector('.code').value);const auto=row.querySelector('.auto');auto.options[1].disabled=!source;if(!source)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动获取 '+row.querySelector('.name').value+'候选，实际国家检测通过后才启用。':'已有手动候选仍须验证实际国家。';};
  row.querySelector('.auto').onchange=autoState;autoState();
  row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();autoState();updateDefaults();});
  row.querySelector('.name').addEventListener('input',()=>updateDefaults());
@@ -54,13 +54,13 @@ function renderLinks(){
 async function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}
 async function read(){
  if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');
- try{const data=await api();subscriptions=data.subscriptions;$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');await readPool();}
- catch(error){status(error.message,true);if(!regionRows().length){addRegion({code:'US',name:'美国',exits:[],auto:true});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}
+ try{const data=await api();subscriptions=data.subscriptions;sources=data.sources;$('addRegionSelect').replaceChildren();for(const item of sources)$('addRegionSelect').append(new Option(item.name,item.code));$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');await readPool();}
+ catch(error){status(error.message,true);if(!regionRows().length){sources=[{code:'US',name:'美国',source:'cmliu-us-dns'}];addRegion({code:'US',name:'美国',exits:[],auto:true});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}
  finally{loading=false;$('save').disabled=false;}
 }
 $('form').onsubmit=async event=>{
  event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;
- const config={version:2,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?'cmliu-us-dns':null}))};
+ const config={version:3,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?sources.find(item=>item.code===row.querySelector('.code').value)?.source:null}))};
  status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}
 };
 async function readPool(force=false){
@@ -80,6 +80,6 @@ async function readPool(force=false){
  finally{poolLoading=false;$('poolRead').disabled=false;$('poolRefresh').disabled=false;}
 }
 $('poolRead').onclick=()=>readPool();$('poolRefresh').onclick=async()=>{await readPool(true);};$('poolRegion').onchange=()=>readPool();
-$('add').onclick=()=>addRegion();$('reload').onclick=read;$('scope').onchange=renderLinks;read();
+$('add').onclick=()=>{const region=sources.find(item=>item.code===$('addRegionSelect').value);if(!region)return;if(regionRows().some(row=>row.querySelector('.code').value===region.code)){status('该地区已经添加。',true);return;}addRegion({...region,exits:[],auto:true});};$('reload').onclick=read;$('scope').onchange=renderLinks;read();
 </script>
 </html>

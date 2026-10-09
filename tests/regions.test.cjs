@@ -25,11 +25,11 @@ async function session(config) {
   cookie = login.headers.get('set-cookie').split(';')[0];
   return { s, env, store, request };
 }
-test('missing region KV uses the existing US pool without writing defaults', async () => {
+test('missing region KV uses automatic regional defaults without writing configuration', async () => {
   const { s, env, store } = await session();
   const config = await s.读取区域配置(env);
   assert.equal(config.defaultRegion, 'US');
-  assert.deepEqual(Array.from(config.regions[0].exits), POOL.map(ip => ip + ':443'));
+  assert.equal(config.regions[0].exits.length, 0);
   assert.equal(store.has('regions.json'), false);
 });
 test('real proxy endpoint selects configured JP and ignores arbitrary overrides', async () => {
@@ -148,7 +148,7 @@ test('subscriptions default to all regions with US first and explicit regional p
   assert.equal(response.status, 200); const config = JSON.parse(await response.text());
   assert.equal(config.proxies.length, 4);
   assert.equal(config['proxy-groups'][0].type, 'select');
-  assert.match(config['proxy-groups'][0].proxies[0], /US/);
+  assert.equal(config['proxy-groups'][0].proxies[0], '美国');
   assert.deepEqual(config['proxy-groups'].filter(g => g.type === 'fallback').map(g => g.proxies.length), [2, 2]);
   assert.ok(config.proxies.every(p => (p['ws-opts']?.path || p['plugin-opts']?.path).includes('region=')));
   assert.ok(config['proxy-groups'].every(g => !g.proxies.includes('DIRECT')));
@@ -160,7 +160,7 @@ test('selected SS and VLESS subscriptions stay in JP, unknown regions fail', asy
     assert.equal(response.status, 200); const links = atob(await response.text()).split('\n');
     assert.equal(links.length, 1);
     const link = new URL(links[0]);
-    assert.equal(link.hash, '#JP-' + protocol.toUpperCase());
+    assert.equal(decodeURIComponent(link.hash), '#日本');
     const path = protocol === 'ss' ? link.searchParams.get('plugin') : link.searchParams.get('path');
     assert.match(path, /region=JP/);
     if (protocol === 'ss') assert.match(path, /enc=aes-128-gcm/);
@@ -210,5 +210,41 @@ test('missing or incomplete KV rejects admin regions before camouflage routes', 
     assert.equal(response.status, 503);
     assert.match(response.headers.get('content-type'), /application\/json/);
     assert.match((await response.json()).error, /KV/);
+  }
+});
+
+test('default directory automatically includes six regions without manual candidates', () => {
+  const s = load(), config = s.默认区域配置();
+  assert.equal(config.version, 3); assert.equal(config.defaultRegion, 'US');
+  assert.deepEqual(Array.from(config.regions, r => r.code), ['US','JP','SG','HK','DE','GB']);
+  assert.ok(config.regions.every(r => r.auto && r.exits.length === 0));
+  for (const region of config.regions) assert.doesNotThrow(() => s.验证区域配置({version:3,defaultRegion:region.code,regions:[region]}));
+});
+
+test('v2 automatic config acquires directory once; v3 removals and old manual config are preserved', async () => {
+  const {s,env} = await session({version:2,defaultRegion:'US',regions:[{code:'US',name:'美国',auto:true,source:'cmliu-us-dns',exits:[]}]});
+  assert.equal((await s.读取区域配置(env)).regions.length, 6);
+  const manual = await session(regions()); assert.equal((await manual.s.读取区域配置(manual.env)).regions.length,2);
+  const edited = await session({version:3,defaultRegion:'US',regions:[{code:'US',name:'美国',auto:true,source:'cmliu-us-dns',exits:[]}]});
+  assert.equal((await edited.s.读取区域配置(edited.env)).regions.length,1);
+});
+
+test('client selections use region names and never expose numbered candidate lists', () => {
+  const s = load(), config = {HOST:'us.naiops.ccwu.cc',UUID,SS:{加密方式:'aes-128-gcm'}};
+  const output = JSON.parse(s.生成区域Clash订阅(config,s.默认区域配置()));
+  assert.deepEqual(output['proxy-groups'][0].proxies,['美国','日本','新加坡','香港','德国','英国']);
+  assert.equal(output.proxies.length,12);
+  assert.ok(output['proxy-groups'].slice(1).every(g=>g.type==='fallback' && g.proxies.length===2));
+  const links=s.生成区域通用订阅(config,'vless',s.默认区域配置()).split('\n');
+  assert.deepEqual(Array.from(links,link=>decodeURIComponent(new URL(link).hash.slice(1))),output['proxy-groups'][0].proxies);
+});
+
+test('missing proxy environment cannot turn automatic empty candidates into a dial', async () => {
+  const s=load();await assert.rejects(s.反代参数获取(new URL(ORIGIN),UUID),/KV/);
+});
+
+test('region names cannot collide with selector or generated protocol node names', () => {
+  const s=load();for(const name of ['地区选择','美国 · VLESS','美国 · SS','DIRECT','REJECT','REJECT-DROP','PASS','COMPATIBLE','GLOBAL']){
+    const config=regions();config.regions[1].name=name;assert.throws(()=>s.验证区域配置(config),/名称/);
   }
 });
