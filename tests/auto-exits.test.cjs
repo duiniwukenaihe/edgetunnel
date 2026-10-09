@@ -99,6 +99,14 @@ test('refresh bounds candidate probes to four and concurrency to two', async () 
   assert.equal(count, 4); assert.equal(maximum, 2);
 });
 
+test('refresh deadline still closes when discovery ignores cancellation', async () => {
+  const f=fixture();f.s.发现区域候选=()=>new Promise(()=>{});
+  f.s.setTimeout=(fn,ms)=>setTimeout(fn,ms===12000?5:ms);
+  await assert.rejects(Promise.race([f.s.获取有效区域池(f.env,f.region,f.request),
+    new Promise((_,reject)=>setTimeout(()=>reject(new Error('refresh remained pending')),50))]),/出口/);
+  assert.equal(f.probes.length,0);
+});
+
 test('failed KV reads and writes cannot enable an unpersisted pool', async () => {
   const f = fixture(); f.env.KV.get = async () => { throw new Error('storage outage'); };
   await assert.rejects(f.s.获取有效区域池(f.env, f.region, f.request, true), /读取/);

@@ -81,7 +81,7 @@ bash scripts/verify.sh
 
 ## 验证范围
 
-自动出口版本已通过来源与生成一致性、语法检查和 15 项 Python、65 项 Node 回归，包括真实协议解析器的认证拒绝、国家变化、重试过期、缓存隔离、限流和关闭行为。Socket 边界模拟不代表真实免费出口可用性。
+自动出口版本已通过来源与生成一致性、语法检查和 15 项 Python、66 项 Node 回归，包括真实协议解析器的认证拒绝、国家变化、重试过期、缓存隔离、限流和关闭行为。Socket 边界模拟不代表真实免费出口可用性。
 
 `tests/native-tls-runtime.cjs` 使用独立 workerd 和本地 CA 夹具调用生产检测函数：正确证书返回 US trace，错误域名与不可信证书均拒绝；完整出口验证因错误信息不明确而正确失败关闭。测试仅更换 Socket 目标为受控本地服务器，不连接真实免费出口。运行方式：
 
@@ -91,7 +91,7 @@ WORKERD_BINARY=/path/to/workerd node tests/native-tls-runtime.cjs /external/path
 
 报告中的 `safetyTestsPassed` 与 `runtimeReady` 必须分别检查；前者为 true 不代表后者为 true。云端必须另外验证正确/错误域名行为及真实 VLESS/SS 美国出口。Cloudflare 存在尚未关闭的 [expectedServerHostname 问题](https://github.com/cloudflare/workerd/issues/6903)，不通过时不得关闭证书验证或发布。
 
-上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本未上线；当前授权续期失败，浏览器会话检查超时，未重新读取线上状态。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
+上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本未上线；现有授权已恢复，同一项目的测试预览已验证 health/login/区域状态，但出口刷新未通过；浏览器会话检查仍超时。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
 
 ## 来源与许可证
 

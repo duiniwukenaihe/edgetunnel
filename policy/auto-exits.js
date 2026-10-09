@@ -115,6 +115,7 @@ async function 发现区域候选(region, signal, failures = []) {
 	if (region.auto) {
 		if (region.code !== 'US' || region.source !== 'cmliu-us-dns') throw 区域错误('该区域没有受支持的自动来源。');
 		for (const type of ['A', 'AAAA']) {
+			if (signal?.aborted) throw new Error('出口发现已取消。');
 			const url = new URL('https://cloudflare-dns.com/dns-query');
 			url.searchParams.set('name', 'proxyip.us.cmliussss.net'); url.searchParams.set('type', type);
 			const controller = new AbortController(), abort = () => controller.abort();
@@ -122,6 +123,7 @@ async function 发现区域候选(region, signal, failures = []) {
 			try {
 				if (signal?.aborted) controller.abort();
 				const data = await 有界检测JSON(await fetch(url.href, { headers: { Accept: 'application/dns-json' }, signal: controller.signal }));
+				if (signal?.aborted) throw new Error('出口发现已取消。');
 				if (data.Status !== 0 || !Array.isArray(data.Answer)) throw new Error('DNS 没有有效应答。');
 				for (const item of data.Answer) {
 					if (results.size >= 32) break;
@@ -180,11 +182,14 @@ async function 读取出口池状态(env, region, request, repair = false) {
 
 async function 刷新区域出口池(env, region, request, key, entry) {
 	const old = entry.pool, now = Date.now(), controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), 12000);
+	let timer;
+	const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+		controller.abort(); reject(new Error('出口发现或检测超过 12 秒限制。'));
+	}, 12000); });
 	const failures = [], checked = [];
 	let candidates = [], cursor = Number.isInteger(old?.cursor) ? old.cursor : 0;
 	try {
-		candidates = await 发现区域候选(region, controller.signal, failures);
+		candidates = await Promise.race([发现区域候选(region, controller.signal, failures), deadline]);
 		const primary = old?.exits[0]?.address;
 		const remaining = candidates.filter(address => address !== primary);
 		const selected = primary ? [primary] : [];
@@ -192,14 +197,15 @@ async function 刷新区域出口池(env, region, request, key, entry) {
 		for (let i = 0; i < count; i++) selected.push(remaining[(cursor + i) % remaining.length]);
 		cursor = remaining.length ? (cursor + selected.length - (primary ? 1 : 0)) % remaining.length : 0;
 		for (let offset = 0; offset < selected.length && !controller.signal.aborted; offset += 2) {
-			await Promise.all(selected.slice(offset, offset + 2).map(async address => {
+			await Promise.race([Promise.all(selected.slice(offset, offset + 2).map(async address => {
 				try {
 					const result = await 探测区域出口(address, region.code, controller.signal);
+					if (controller.signal.aborted) return;
 					验证出口池({ version: 1, region: region.code, exits: [result], failures: [], lastAttemptAt: Date.now(), expiresAt: result.checkedAt + 出口有效期, nextRefreshAt: Date.now() }, region.code);
 					checked.push(result);
-				} catch (error) { failures.push({ address, reason: String(error.message).slice(0, 180),
+				} catch (error) { if (!controller.signal.aborted) failures.push({ address, reason: String(error.message).slice(0, 180),
 					invalidatesExit: error.invalidatesExit === true || /certificate|hostname mismatch/i.test(error.message) }); }
-			}));
+			})), deadline]);
 		}
 	} catch (error) { failures.push({ address: 'source', reason: String(error.message).slice(0, 180) }); }
 	finally { clearTimeout(timer); controller.abort(); }
