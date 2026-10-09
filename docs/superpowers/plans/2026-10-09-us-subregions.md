@@ -55,6 +55,6 @@
 
 - [x] Document nine entries, 18 Mihomo protocol proxies, shared US pool, state mapping, request-driven updates, approximate/null geolocation, and unchanged country links. No promise of enough free candidates per subregion.
 - [x] Run python3 scripts/apply-us-policy.py upstream/_worker.js _worker.js then bash scripts/verify.sh. Full regression is existing lightweight tests, not dependency install or compilation. Preserve RED/GREEN evidence outside repo.
-- [ ] Independent whole-branch review of source diff and test results; fix any important findings before completion.
+- [x] Independent whole-branch review of source diff and test results; fix any important findings before completion.
 - [ ] Root stages only source/tests/docs/generated worker, commits, pushes feature branch and creates PR attached to task. Confirm GitHub CI. No Cloudflare production deploy.
 - [ ] Record final revision, test summary, CI/PR, limitations and resource cleanup. Keep formal verification evidence and remove only owned regenerable scratch/processes.
