@@ -146,10 +146,10 @@ test('subscriptions default to all regions with US first and explicit regional p
   const { s, request } = await session(regions()); const token = await s.MD5MD5('us.naiops.ccwu.cc' + UUID);
   const response = await request('/sub?token=' + token + '&target=clash');
   assert.equal(response.status, 200); const config = JSON.parse(await response.text());
-  assert.equal(config.proxies.length, 4);
+  assert.equal(config.proxies.length, 10);
   assert.equal(config['proxy-groups'][0].type, 'select');
-  assert.equal(config['proxy-groups'][0].proxies[0], '美国');
-  assert.deepEqual(config['proxy-groups'].filter(g => g.type === 'fallback').map(g => g.proxies.length), [2, 2]);
+  assert.equal(config['proxy-groups'][0].proxies[0], 'Naiops-US · 美国自动');
+  assert.deepEqual(config['proxy-groups'].filter(g => g.type === 'fallback').map(g => g.proxies.length), [2, 2, 2, 2, 2]);
   assert.ok(config.proxies.every(p => (p['ws-opts']?.path || p['plugin-opts']?.path).includes('region=')));
   assert.ok(config['proxy-groups'].every(g => !g.proxies.includes('DIRECT')));
 });
@@ -160,7 +160,7 @@ test('selected SS and VLESS subscriptions stay in JP, unknown regions fail', asy
     assert.equal(response.status, 200); const links = atob(await response.text()).split('\n');
     assert.equal(links.length, 1);
     const link = new URL(links[0]);
-    assert.equal(decodeURIComponent(link.hash), '#日本');
+    assert.equal(decodeURIComponent(link.hash), '#Naiops-JP · 日本自动');
     const path = protocol === 'ss' ? link.searchParams.get('plugin') : link.searchParams.get('path');
     assert.match(path, /region=JP/);
     if (protocol === 'ss') assert.match(path, /enc=aes-128-gcm/);
@@ -232,8 +232,8 @@ test('v2 automatic config acquires directory once; v3 removals and old manual co
 test('client selections use region names and never expose numbered candidate lists', () => {
   const s = load(), config = {HOST:'us.naiops.ccwu.cc',UUID,SS:{加密方式:'aes-128-gcm'}};
   const output = JSON.parse(s.生成区域Clash订阅(config,s.默认区域配置()));
-  assert.deepEqual(output['proxy-groups'][0].proxies,['美国','日本','新加坡','香港','德国','英国']);
-  assert.equal(output.proxies.length,12);
+  assert.deepEqual(output['proxy-groups'][0].proxies,['Naiops-US · 美国自动','Naiops-US-EAST · 美国东部','Naiops-US-CENTRAL · 美国中部','Naiops-US-WEST · 美国西部','Naiops-JP · 日本自动','Naiops-SG · 新加坡自动','Naiops-HK · 香港自动','Naiops-DE · 德国自动','Naiops-GB · 英国自动']);
+  assert.equal(output.proxies.length,18);
   assert.ok(output['proxy-groups'].slice(1).every(g=>g.type==='fallback' && g.proxies.length===2));
   const links=s.生成区域通用订阅(config,'vless',s.默认区域配置()).split('\n');
   assert.deepEqual(Array.from(links,link=>decodeURIComponent(new URL(link).hash.slice(1))),output['proxy-groups'][0].proxies);

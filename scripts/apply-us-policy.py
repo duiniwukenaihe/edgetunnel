@@ -51,6 +51,10 @@ def apply_policy(source):
                  "\t\t\t\t\tif (反代上下文.获取验证出口) { 当前验证池 = await 反代上下文.获取验证出口(); ctx反代IP = 当前验证池.exits.map(item => item.address).join(','); }\n" + dial_anchor)
     batch_anchor = '\t\t\tfor (let i = 0; i < 所有反代数组.length; i += 实际并发数) {'
     replace_once(batch_anchor, batch_anchor + "\n\t\t\t\tif (当前验证池 && 当前验证池.expiresAt <= Date.now()) throw 区域错误('出口验证已过期，请重新建立连接。', 503);")
+    candidate_anchor = '\t\t\t\t\tconst [反代地址, 反代端口] = 所有反代数组[索引];'
+    replace_once(candidate_anchor, candidate_anchor + "\n\t\t\t\t\tif (当前验证池) {\n"
+                 "\t\t\t\t\t\tconst member = 当前验证池.exits.find(item => item.address === (反代地址.includes(':') ? '[' + 反代地址.replace(/^\\[|\\]$/g, '') + ']' : 反代地址) + ':' + 反代端口);\n"
+                 "\t\t\t\t\t\tif (!member || !有效区域出口(member, 当前验证池) || (当前验证池.验证当前出口 && !当前验证池.验证当前出口(member))) continue;\n\t\t\t\t\t}")
     start = result.index('function 创建请求TCP连接器(request) {')
     end = result.index('\n////////////////////////////////////////////TLSClient', start)
     replace_once(result[start:end], 'function 创建请求TCP连接器(request) {\n\treturn connect;\n}')

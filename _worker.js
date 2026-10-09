@@ -2353,6 +2353,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 				for (let j = 0; j < 实际并发数 && i + j < 所有反代数组.length; j++) {
 					const 索引 = (反代数组索引 + i + j) % 所有反代数组.length;
 					const [反代地址, 反代端口] = 所有反代数组[索引];
+					if (当前验证池) {
+						const member = 当前验证池.exits.find(item => item.address === (反代地址.includes(':') ? '[' + 反代地址.replace(/^\[|\]$/g, '') + ']' : 反代地址) + ':' + 反代端口);
+						if (!member || !有效区域出口(member, 当前验证池) || (当前验证池.验证当前出口 && !当前验证池.验证当前出口(member))) continue;
+					}
 					候选列表.push({ hostname: 反代地址, port: 反代端口, index: 索引 });
 				}
 				let socket = null, candidate = null;
@@ -6164,7 +6168,7 @@ async function 请求优选API(urls, 默认端口 = '443', uid = "000000", 超�
 	return [Array.from(results), LINK数组, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-const 区域管理页面 = "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>naiops · 区域配置</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:32px auto;padding:0 20px}header,section{background:white;border:1px solid #dce3eb;border-radius:12px;padding:22px;margin-bottom:18px}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 12px;font-size:20px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer;margin-right:8px}button:disabled{opacity:.5;cursor:wait}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint{color:#526172;font-size:14px}#status{white-space:pre-wrap;min-height:26px}.error{color:#a32222}.success{color:#14683b}#links input{font:13px/1.6 monospace}.actions{position:sticky;bottom:0;background:#f4f6fa;padding:12px 0}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}nav{display:flex;gap:20px;margin-top:12px}@media(max-width:600px){.row{grid-template-columns:1fr;gap:0}main{padding:0 12px}}\n</style>\n<main>\n<header><h1>区域配置</h1><p>默认使用美国，自动发现候选并验证实际出口国家。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href=\"/admin/settings\">原有设置</a><a href=\"/logout\">退出登录</a></nav></header>\n<form id=\"form\"><section><h2>地区与出口</h2><label>默认地区<select id=\"defaultRegion\" required></select></label><div id=\"regions\"></div><label>添加自动地区<select id=\"addRegionSelect\"></select></label><button type=\"button\" id=\"add\">添加地区</button><p class=\"hint\">自动获取、检测并更新各地区候选，无需填写 IP。默认先选延迟最低的有效出口，随后保留健康主出口并在故障时切换。没有通过检测的地区会显示不可用。</p></section>\n<div class=\"actions\"><button id=\"save\" type=\"submit\" disabled>保存配置</button><button id=\"reload\" type=\"button\">重新读取</button><div id=\"status\" role=\"status\" aria-live=\"polite\">正在读取配置…</div></div></form>\n<section id=\"links\" hidden><h2>客户端订阅</h2><p class=\"hint\">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；v2rayA 等通用客户端每个地区只有一个入口，区内 IP 优选在服务端自动完成。保存后更新客户端订阅。</p><label>订阅范围<select id=\"scope\"><option value=\"\">全部已配置地区</option></select></label><div id=\"addresses\"></div></section>\n<section><h2>出口检测</h2><label>查看地区<select id=\"poolRegion\"></select></label><button type=\"button\" id=\"poolRead\">读取状态</button><button type=\"button\" id=\"poolRefresh\">立即检测并刷新</button><p class=\"hint\">显示当前访问边缘的检测结果。有认证请求时每 15 分钟更新，30 分钟后过期；无请求时暂停更新。保留健康主出口，刷新不能保证 ChatGPT 登录成功。</p><div id=\"poolStatus\" role=\"status\" aria-live=\"polite\">请先读取区域配置。</div><div id=\"poolDetails\"></div></section>\n</main>\n<script>\n'use strict';\nconst $=id=>document.getElementById(id);\nlet subscriptions={}, sources=[], loading=false, poolLoading=false;\nfunction status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}\nfunction regionRows(){return [...document.querySelectorAll('.region')];}\nfunction updateDefaults(selected=$('defaultRegion').value){\n const defaults=$('defaultRegion');defaults.replaceChildren();\n for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}\n if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;\n}\nfunction addRegion(region){\n const row=document.createElement('div');row.className='region';\n row.innerHTML='<div class=\"row\"><label>地区代码<input class=\"code\" maxlength=\"2\" pattern=\"[A-Z]{2}\" placeholder=\"US\" required></label><label>地区名称<input class=\"name\" maxlength=\"32\" placeholder=\"美国\" required></label></div><label>自动发现<select class=\"auto\"><option value=\"false\">关闭 · 手动候选</option><option value=\"true\">开启 · 地区来源</option></select></label><p class=\"hint source\"></p><details><summary>高级：已有手动候选</summary><label>手动候选（每行一个）<textarea class=\"exits\" placeholder=\"自动模式无需填写\"></textarea></label></details><button type=\"button\" class=\"remove\">删除地区</button>';\n row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\\n');\n row.querySelector('.auto').value=String(!!region.auto);\n const autoState=()=>{const source=sources.find(item=>item.code===row.querySelector('.code').value);const auto=row.querySelector('.auto');auto.options[1].disabled=!source;if(!source)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动获取 '+row.querySelector('.name').value+'候选，实际国家检测通过后才启用。':'已有手动候选仍须验证实际国家。';};\n row.querySelector('.auto').onchange=autoState;autoState();\n row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();autoState();updateDefaults();});\n row.querySelector('.name').addEventListener('input',()=>updateDefaults());\n row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};\n $('regions').append(row);updateDefaults();\n}\nfunction showLinks(config){\n const scope=$('scope');const selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));\n for(const region of config.regions)scope.append(new Option(region.code+' · '+region.name,region.code));\n if(config.regions.some(r=>r.code===selected))scope.value=selected;\n const pool=$('poolRegion');const previous=pool.value;pool.replaceChildren();for(const region of config.regions)pool.append(new Option(region.code+' · '+region.name,region.code));pool.value=config.regions.some(r=>r.code===previous)?previous:config.defaultRegion;\n $('links').hidden=false;renderLinks();\n}\nfunction renderLinks(){\n $('addresses').replaceChildren();\n for(const [type,label] of [['clash','Mihomo / Clash Meta'],['vless','VLESS / v2rayA'],['ss','SS（需 v2ray-plugin）']]){\n const address=new URL(subscriptions[type]);if($('scope').value)address.searchParams.set('region',$('scope').value);\n const field=document.createElement('label');field.textContent=label;const input=document.createElement('input');input.readOnly=true;input.value=address.href;input.onclick=()=>input.select();field.append(input);\n const copy=document.createElement('button');copy.type='button';copy.textContent='复制地址';copy.onclick=async()=>{try{await navigator.clipboard.writeText(input.value);status('已复制订阅地址。');}catch{input.select();status('请复制已选中的地址。');}};\n $('addresses').append(field,copy);\n }\n}\nasync function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}\nasync function read(){\n if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');\n try{const data=await api();subscriptions=data.subscriptions;sources=data.sources;$('addRegionSelect').replaceChildren();for(const item of sources)$('addRegionSelect').append(new Option(item.name,item.code));$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');await readPool();}\n catch(error){status(error.message,true);if(!regionRows().length){sources=[{code:'US',name:'美国',source:'cmliu-us-dns'}];addRegion({code:'US',name:'美国',exits:[],auto:true});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}\n finally{loading=false;$('save').disabled=false;}\n}\n$('form').onsubmit=async event=>{\n event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;\n const config={version:3,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?sources.find(item=>item.code===row.querySelector('.code').value)?.source:null}))};\n status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}\n};\nasync function readPool(force=false){\n if(poolLoading||!$('poolRegion').value)return;poolLoading=true;$('poolRead').disabled=true;$('poolRefresh').disabled=true;$('poolStatus').className='';$('poolStatus').textContent=force?'正在发现和检测出口…':'正在读取状态…';\n const address='/admin/exits.json?region='+encodeURIComponent($('poolRegion').value);\n try{\n  const response=await fetch(address,force?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:undefined);\n  if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}\n  const data=await response.json();if(!response.ok&&!data.pool)throw new Error(data.error||'出口状态读取失败。');\n  $('poolStatus').className=data.available?'success':'error';$('poolStatus').textContent=data.error||(data.region+' · 边缘 '+data.colo+' · '+(data.available?'有有效出口':'暂无有效出口'));$('poolDetails').replaceChildren();\n  const date=value=>new Date(value).toLocaleString();\n  if(data.pool){const summary=document.createElement('p');summary.className='hint';summary.textContent='最近检测：'+date(data.pool.lastAttemptAt)+'；过期：'+date(data.pool.expiresAt);$('poolDetails').append(summary);\n   for(const [index,item] of data.pool.exits.entries()){const line=document.createElement('p');line.style.overflowWrap='anywhere';line.textContent=(index===0?'主出口':'备用')+' '+item.address+' → '+item.exitIP+' · '+item.country+' · '+item.latency+' ms · '+date(item.checkedAt);$('poolDetails').append(line);}\n   for(const failure of data.pool.failures){const line=document.createElement('p');line.className='hint';line.style.overflowWrap='anywhere';line.textContent=failure.address+'：'+failure.reason;$('poolDetails').append(line);}\n  }else $('poolDetails').textContent='尚未检测，请点击立即检测并刷新。';\n }catch(error){$('poolStatus').className='error';$('poolStatus').textContent=error.message;$('poolDetails').replaceChildren();}\n finally{poolLoading=false;$('poolRead').disabled=false;$('poolRefresh').disabled=false;}\n}\n$('poolRead').onclick=()=>readPool();$('poolRefresh').onclick=async()=>{await readPool(true);};$('poolRegion').onchange=()=>readPool();\n$('add').onclick=()=>{const region=sources.find(item=>item.code===$('addRegionSelect').value);if(!region)return;if(regionRows().some(row=>row.querySelector('.code').value===region.code)){status('该地区已经添加。',true);return;}addRegion({...region,exits:[],auto:true});};$('reload').onclick=read;$('scope').onchange=renderLinks;read();\n</script>\n</html>\n";
+const 区域管理页面 = "<!doctype html>\n<html lang=\"zh-CN\">\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>naiops · 区域配置</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:15px/1.6 system-ui,sans-serif}main{max-width:1120px;margin:28px auto;padding:0 20px}header,section,.advanced{background:white;border:1px solid #dce3eb;border-radius:8px;padding:22px;margin-bottom:18px}h1{margin:0;font-size:26px}h2{margin:0 0 12px;font-size:20px}h3{margin:0;font-size:16px;overflow-wrap:anywhere}p{margin:8px 0 12px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;min-width:0;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.secondary{background:#eaf0f8;color:#175ac6}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint,.meta{color:#526172;font-size:13px}.error{color:#a32222}.success{color:#14683b}#status{white-space:pre-wrap;min-height:24px;margin-top:12px}#links input{font:13px/1.6 monospace}.addresses{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px}.address button{width:100%}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-head h2{margin:0}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.entry-card{border:1px solid #dce3eb;border-radius:6px;padding:16px;min-width:0;display:flex;flex-direction:column}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.state{font-size:12px;white-space:nowrap;border-radius:4px;padding:2px 7px;background:#edf1f5;color:#526172}.state.success{background:#e6f5ec;color:#14683b}.state.error{background:#fff0e7;color:#964414}.count{margin:12px 0 4px;font-size:23px;font-weight:650}.reason,.feedback{font-size:13px;overflow-wrap:anywhere;min-height:21px;margin:4px 0}.entry-card button{margin-top:12px;width:100%;font-size:14px}.entry-card details{margin-top:12px}.entry-card summary{font-size:13px}.details-body{font-size:12px;overflow-wrap:anywhere}.details-body p{margin:8px 0}.card-actions{margin-top:auto}summary{cursor:pointer;font-weight:600}details[open]>summary{margin-bottom:12px}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}nav{display:flex;gap:20px;margin-top:10px}#overviewStatus{margin-bottom:12px}.scope{max-width:340px}@media(max-width:900px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.addresses{grid-template-columns:1fr}}@media(max-width:600px){main{margin:16px auto;padding:0 12px}header,section,.advanced{padding:16px}.cards,.row{grid-template-columns:1fr;gap:12px}.section-head{align-items:flex-start;flex-wrap:wrap}h1{font-size:23px}}\n</style>\n<main>\n<header><h1>地区总览</h1><p class=\"hint\">默认美国自动。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href=\"/admin/settings\">原有设置</a><a href=\"/logout\">退出登录</a></nav><div id=\"status\" role=\"status\" aria-live=\"polite\">正在读取配置…</div><div id=\"recovery\" hidden><p class=\"hint\">无法读取已存配置。可先重试，或从六个默认国家开始重新配置；点击保存后才会替换已存配置。</p><button type=\"button\" id=\"repair\" class=\"secondary\">从默认国家开始修复</button></div></header>\n<section id=\"links\" hidden><h2>客户端订阅</h2><label class=\"scope\">订阅范围<select id=\"scope\"><option value=\"\">全部已配置地区</option></select></label><div id=\"addresses\" class=\"addresses\"></div><p class=\"hint\">地址含私密凭据，请勿公开。Mihomo 每入口提供 VLESS 和 SS 两种协议；通用客户端每地区一条入口。保存配置后更新客户端订阅。</p></section>\n<section><div class=\"section-head\"><h2>地区状态</h2><button type=\"button\" id=\"statusRead\" class=\"secondary\" disabled>重新读取状态</button></div><div id=\"overviewStatus\" class=\"hint\" role=\"status\" aria-live=\"polite\">正在读取地区入口…</div><div id=\"cards\" class=\"cards\"></div><p class=\"hint\">状态属于当前访问边缘。美国四个入口共享发现与检测轮次；子区域按签名回执中的州信息划分，地理信息有误差。每 15 分钟由请求触发更新，出口证明 30 分钟后过期，无请求时暂停更新。刷新不能保证 ChatGPT 登录成功。</p></section>\n<details class=\"advanced\" id=\"advanced\"><summary>高级配置 · 国家与手动候选</summary><form id=\"form\"><label>默认国家<select id=\"defaultRegion\" required></select></label><div id=\"regions\"></div><label>添加自动国家<select id=\"addRegionSelect\"></select></label><button type=\"button\" id=\"add\">添加国家</button><p class=\"hint\">美国子区域继承美国配置，无需单独填写候选。自动模式会获取并验证实际出口国家。</p><div class=\"actions\"><button id=\"save\" type=\"submit\" disabled>保存配置</button><button id=\"reload\" type=\"button\" class=\"secondary\">重新读取配置</button></div></form></details>\n</main>\n<script>\n'use strict';\nconst $=id=>document.getElementById(id);\nlet subscriptions={}, sources=[], entries=[], loading=false, statusReading=false, refreshingCountry=null;\nconst cards=new Map();\nfunction status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}\nfunction regionRows(){return [...document.querySelectorAll('.region')];}\nfunction updateDefaults(selected=$('defaultRegion').value){\n const defaults=$('defaultRegion');defaults.replaceChildren();\n for(const row of regionRows()){const option=document.createElement('option');option.value=row.querySelector('.code').value.toUpperCase().trim();option.textContent=option.value+' · '+row.querySelector('.name').value;defaults.append(option);}\n if([...defaults.options].some(o=>o.value===selected))defaults.value=selected;\n}\nfunction addRegion(region){\n const row=document.createElement('div');row.className='region';\n row.innerHTML='<div class=\"row\"><label>地区代码<input class=\"code\" maxlength=\"2\" pattern=\"[A-Z]{2}\" placeholder=\"US\" required></label><label>地区名称<input class=\"name\" maxlength=\"32\" placeholder=\"美国\" required></label></div><label>自动发现<select class=\"auto\"><option value=\"false\">关闭 · 手动候选</option><option value=\"true\">开启 · 地区来源</option></select></label><p class=\"hint source\"></p><details><summary>高级：已有手动候选</summary><label>手动候选（每行一个）<textarea class=\"exits\" placeholder=\"自动模式无需填写\"></textarea></label></details><button type=\"button\" class=\"remove\">删除地区</button>';\n row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\\n');\n row.querySelector('.auto').value=String(!!region.auto);\n const autoState=()=>{const source=sources.find(item=>item.code===row.querySelector('.code').value);const auto=row.querySelector('.auto');auto.options[1].disabled=!source;if(!source)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动获取 '+row.querySelector('.name').value+'候选，实际国家检测通过后才启用。':'已有手动候选仍须验证实际国家。';};\n row.querySelector('.auto').onchange=autoState;autoState();\n row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();autoState();updateDefaults();});\n row.querySelector('.name').addEventListener('input',()=>updateDefaults());\n row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};\n $('regions').append(row);updateDefaults();\n}\n\nfunction showLinks(){\n const scope=$('scope'), selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));\n for(const entry of entries)scope.append(new Option(entry.name,entry.code));\n if(entries.some(entry=>entry.code===selected))scope.value=selected;\n $('links').hidden=!entries.length;renderLinks();\n}\nfunction renderLinks(){\n $('addresses').replaceChildren();\n for(const [type,label] of [['clash','Mihomo / Clash Meta'],['vless','VLESS / v2rayA'],['ss','SS（需 v2ray-plugin）']]){\n const address=new URL(subscriptions[type]);if($('scope').value)address.searchParams.set('region',$('scope').value);\n const block=document.createElement('div');block.className='address';\n const field=document.createElement('label');field.textContent=label;const input=document.createElement('input');input.readOnly=true;input.value=address.href;input.onclick=()=>input.select();field.append(input);\n const copy=document.createElement('button');copy.type='button';copy.textContent='复制地址';copy.onclick=async()=>{try{await navigator.clipboard.writeText(input.value);status('已复制订阅地址。');}catch{input.select();status('请复制已选中的地址。');}};\n block.append(field,copy);$('addresses').append(block);\n }\n}\nasync function request(address,options){\n const response=await fetch(address,options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}\n const data=await response.json();if(!response.ok)throw new Error((response.status===429?'刷新受限：':'')+(data.error||'请求失败，请稍后重试。'));\n return data;\n}\nfunction syncButtons(){\n const busy=loading||statusReading||refreshingCountry!==null;\n $('repair').disabled=busy||!!regionRows().length;\n $('save').disabled=busy||!regionRows().length;$('reload').disabled=busy;$('statusRead').disabled=busy||!entries.length;\n for(const card of cards.values())card.querySelector('button').disabled=busy;\n}\nfunction buildCards(){\n cards.clear();$('cards').replaceChildren();\n for(const entry of entries){\n const card=document.createElement('article');card.className='entry-card';\n card.innerHTML='<div class=\"card-head\"><h3></h3><span class=\"state\">待读取</span></div><div class=\"meta identity\"></div><div class=\"count\">— 有效出口</div><p class=\"reason\">正在读取状态…</p><div class=\"meta round\"></div><div class=\"meta updated\"></div><p class=\"feedback\" role=\"status\" aria-live=\"polite\"></p><div class=\"card-actions\"><button type=\"button\"></button><details><summary>实际出口与检测错误</summary><div class=\"details-body\"></div></details></div>';\n card.querySelector('h3').textContent=entry.name;card.querySelector('.identity').textContent=entry.country+' · '+({east:'东部',central:'中部',west:'西部'}[entry.area]||'国家自动');\n const button=card.querySelector('button');button.textContent=entry.country==='US'?'检测并刷新美国共享池':'检测并刷新';button.onclick=()=>refreshEntry(entry.code);\n cards.set(entry.code,card);$('cards').append(card);\n }\n $('overviewStatus').textContent=entries.length?'正在读取 '+entries.length+' 个地区状态…':'暂无地区入口，请在高级配置中添加国家后保存。';\n}\nconst date=value=>value?new Date(value).toLocaleString():'尚无记录';\nfunction renderCard(entry,data){\n const card=cards.get(entry.code);if(!card)return;\n const labels={not_checked:'待检测',expired:'已过期',source_failed:'来源或检测失败',missing_geo:'缺少地理证明',area_unavailable:'子区域不可用',country_unavailable:'国家不可用'};\n const state=card.querySelector('.state');state.textContent=data.available?'可用':labels[data.unavailableState]||'不可用';state.className='state '+(data.available?'success':'error');\n card.querySelector('.count').textContent=(data.availableCount||0)+' 有效出口';card.querySelector('.reason').textContent=data.unavailableReason||'所选地区内有已验证出口。';\n const round=data.countryPool||{};\n card.querySelector('.round').textContent='边缘 '+data.colo+' · '+(entry.country==='US'?'共享美国轮次':'国家轮次')+'：发现 '+(round.discoveredCount||0)+' · 检测 '+(round.probedCount||0);\n card.querySelector('.updated').textContent='轮次更新：'+date(round.lastAttemptAt)+'；下次请求更新：'+date(round.nextRefreshAt);\n const details=card.querySelector('.details-body');details.replaceChildren();\n if(data.pool?.exits.length){const summary=document.createElement('p');summary.textContent='所选有效出口最晚过期：'+date(data.pool.expiresAt);details.append(summary);}\n for(const [index,item] of (data.pool?.exits||[]).entries()){\n const line=document.createElement('p');line.textContent=(index===0?'主出口':'备用')+' '+item.address+' → '+item.exitIP+' · '+item.country+(item.regionCode?' / '+item.regionCode:'')+(item.city?' / '+item.city:'')+' · '+item.latency+' ms · 验证 '+date(item.checkedAt);details.append(line);\n }\n for(const failure of data.pool?.failures||[]){const line=document.createElement('p');line.className='error';line.textContent=failure.address+'：'+failure.reason;details.append(line);}\n if(!details.children.length)details.textContent=data.unavailableState==='not_checked'?'尚未检测，请手动刷新。':'暂无所选地区的有效出口明细。';\n}\nasync function readStatuses(selected=entries){\n if(statusReading)return;statusReading=true;syncButtons();let next=0, failures=0;\n $('overviewStatus').textContent='正在读取地区状态…';\n async function reader(){\n while(next<selected.length){const entry=selected[next++],card=cards.get(entry.code);if(!card)continue;\n card.querySelector('.feedback').textContent='正在读取状态…';card.querySelector('.feedback').className='feedback hint';\n try{const data=await request('/admin/exits.json?region='+encodeURIComponent(entry.code));renderCard(entry,data);card.querySelector('.feedback').textContent='';}\n catch(error){failures++;card.querySelector('.feedback').textContent='读取失败：'+error.message+' 可重新读取状态。';card.querySelector('.feedback').className='feedback error';if(card.querySelector('.state').textContent==='待读取'){card.querySelector('.state').textContent='读取失败';card.querySelector('.reason').textContent='暂未获得地区状态。';}}\n }\n }\n try{await Promise.all([reader(),reader()]);$('overviewStatus').textContent=failures?'有 '+failures+' 个地区读取失败，请重新读取。':entries.length?'已读取地区状态；点击对应按钮才会检测并刷新。':'暂无地区入口。';$('overviewStatus').className=failures?'error':'hint';}\n finally{statusReading=false;syncButtons();}\n}\nasync function refreshEntry(code){\n const entry=entries.find(item=>item.code===code);if(!entry||loading||statusReading||refreshingCountry!==null)return;\n refreshingCountry=entry.country;syncButtons();const card=cards.get(code),feedback=card.querySelector('.feedback');feedback.className='feedback hint';feedback.textContent='正在发现和检测'+entry.country+'出口…';let message='',error=false;\n try{await request('/admin/exits.json?region='+encodeURIComponent(code),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});message='已刷新'+entry.country+'共享轮次。';}\n catch(cause){message=cause.message;error=true;}\n try{await readStatuses(entries.filter(item=>item.country===entry.country));feedback.className='feedback '+(error?'error':'success');feedback.textContent=message;}\n finally{refreshingCountry=null;syncButtons();}\n}\nasync function loadConfig(){\n const data=await request('/admin/regions.json');\n subscriptions=data.subscriptions;sources=data.sources;entries=data.entries;$('recovery').hidden=true;\n $('addRegionSelect').replaceChildren();for(const item of sources)$('addRegionSelect').append(new Option(item.name,item.code));\n $('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks();buildCards();\n}\nasync function read(){\n if(loading||statusReading||refreshingCountry!==null)return;loading=true;syncButtons();status('正在读取配置…');\n try{await loadConfig();status('已读取配置。');await readStatuses();}\n catch(error){$('recovery').hidden=!!regionRows().length;status('读取失败：'+error.message+' 当前编辑内容已保留，可重新读取配置。',true);if(!entries.length)$('overviewStatus').textContent='配置读取失败，暂未获得地区入口。';}\n finally{loading=false;syncButtons();}\n}\n$('form').onsubmit=async event=>{\n event.preventDefault();if(loading||statusReading||refreshingCountry!==null)return;loading=true;syncButtons();\n const config={version:3,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?sources.find(item=>item.code===row.querySelector('.code').value)?.source:null}))};\n status('正在保存…');\n try{const saved=await request('/admin/regions.json',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});status(saved.message);\n try{await loadConfig();await readStatuses();}catch(error){status(saved.message+' 重新读取失败：'+error.message+'，请重新读取配置以更新地区入口。',true);}}\n catch(error){status(error.message,true);}finally{loading=false;syncButtons();}\n};\n$('repair').onclick=()=>{\n if(loading||statusReading||refreshingCountry!==null||regionRows().length)return;\n // This local draft is initialized only by an explicit repair click, never by a failed GET.\n sources=[['US','美国'],['JP','日本'],['SG','新加坡'],['HK','香港'],['DE','德国'],['GB','英国']].map(([code,name])=>({code,name,source:'cmliu-'+code.toLowerCase()+'-dns'}));\n $('addRegionSelect').replaceChildren();for(const item of sources){$('addRegionSelect').append(new Option(item.name,item.code));addRegion({...item,exits:[],auto:true});}\n updateDefaults('US');$('advanced').open=true;$('recovery').hidden=true;syncButtons();status('已准备默认国家修复草稿。请检查高级配置并保存；保存前不会替换已存配置。');\n};\n$('statusRead').onclick=()=>readStatuses();\n$('add').onclick=()=>{const region=sources.find(item=>item.code===$('addRegionSelect').value);if(!region)return;if(regionRows().some(row=>row.querySelector('.code').value===region.code)){status('该国家已经添加。',true);return;}addRegion({...region,exits:[],auto:true});syncButtons();};$('reload').onclick=read;$('scope').onchange=renderLinks;read();\n</script>\n</html>\n";
 const 自动地区目录 = [
 	{ code: 'US', name: '美国' }, { code: 'JP', name: '日本' }, { code: 'SG', name: '新加坡' },
 	{ code: 'HK', name: '香港' }, { code: 'DE', name: '德国' }, { code: 'GB', name: '英国' }
@@ -6226,19 +6230,33 @@ async function 读取区域配置(env) {
 	}
 }
 
+const 美国子区域 = [
+	{ code: 'US-EAST', area: 'east', name: '美国东部' },
+	{ code: 'US-CENTRAL', area: 'central', name: '美国中部' },
+	{ code: 'US-WEST', area: 'west', name: '美国西部' }
+];
+
+function 区域入口列表(config) {
+	return config.regions.flatMap(region => {
+		const entry = { ...region, country: region.code, area: null, name: 'Naiops-' + region.code + ' · ' + region.name + '自动' };
+		return region.code === 'US' ? [entry, ...美国子区域.map(child => ({ ...entry, ...child, name: 'Naiops-' + child.code + ' · ' + child.name }))] : [entry];
+	});
+}
+
 function 选择区域(config, url) {
 	const values = url.searchParams.getAll('region');
-	if (values.length > 1 || (values.length === 1 && !/^[a-zA-Z]{2}$/.test(values[0])))
-		throw 区域错误('region 参数必须是单个两位区域代码。');
+	if (values.length > 1 || (values.length === 1 && !/^[a-zA-Z]{2}(?:-(?:EAST|CENTRAL|WEST))?$/i.test(values[0])))
+		throw 区域错误('region 参数必须是单个有效区域代码。');
 	const code = values.length ? values[0].toUpperCase() : config.defaultRegion;
-	const region = config.regions.find(region => region.code === code);
+	const region = 区域入口列表(config).find(region => region.code === code);
 	if (!region) throw 区域错误('所选区域不存在，请更新订阅或在面板中配置。');
 	return region;
 }
 
 function 订阅区域列表(config, selected) {
-	return selected ? [selected] : [config.regions.find(r => r.code === config.defaultRegion),
-		...config.regions.filter(r => r.code !== config.defaultRegion)];
+	const entries = 区域入口列表(config);
+	return selected ? [entries.find(region => region.code === selected.code)] : [entries.find(r => r.code === config.defaultRegion),
+		...entries.filter(r => r.code !== config.defaultRegion)];
 }
 
 function 生成区域通用订阅(config, protocol, regions = 默认区域配置(), selected = null) {
@@ -6303,9 +6321,16 @@ async function 处理区域管理(request, env, url, host, uuid) {
 				catch (error) { if (error.status !== 503) throw error; refreshError = error; }
 			}
 			const { entry } = await 读取出口池状态(env, region, request);
-			return Response.json({ region: region.code, colo: request.cf?.colo || 'unknown', pool: entry.pool,
+			const pool = 区域池视图(entry.pool, region);
+			const unavailableState = 区域不可用状态(entry.pool, region);
+			const reasons = { not_checked: '尚未检测当前国家出口。', expired: '所选区域的出口证明已过期。',
+				source_failed: '发现来源或检测失败，当前区域暂无有效出口。', missing_geo: '有效国家出口缺少可识别的美国州证据。',
+				area_unavailable: '所选美国子区域暂无有效州证据出口。', country_unavailable: '当前国家暂无有效出口。' };
+			return Response.json({ region: region.code, country: region.country, area: region.area, colo: request.cf?.colo || 'unknown', pool,
+				availableCount: pool?.exits.length || 0, countryPool: 区域池统计(entry.pool, region.country),
+				unavailableState, unavailableReason: unavailableState ? reasons[unavailableState] : null,
 				...(refreshError ? { error: refreshError.message } : {}),
-				available: !!entry.pool?.exits.length && entry.pool.expiresAt > Date.now(),
+				available: !!pool?.exits.length,
 				refreshSeconds: 900, expirySeconds: 1800 }, { status: refreshError ? 503 : 200, headers });
 		} catch (error) { return 区域错误响应(error); }
 	}
@@ -6332,7 +6357,7 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			if (protocol) address.searchParams.set('protocol', protocol);
 			return address.href;
 		};
-		return Response.json({ config, sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
+		return Response.json({ config, entries: 订阅区域列表(config), sources: 自动地区目录, subscriptions: { clash: subscription('clash'),
 			vless: subscription('mixed', 'vless'), ss: subscription('mixed', 'ss') } }, { headers });
 	} catch (error) { return 区域错误响应(error); }
 }
@@ -6341,7 +6366,7 @@ async function 处理区域管理(request, env, url, host, uuid) {
 // Only a random nonce is sent through candidates. The independent random key stays in KV.
 const 出口回执密钥名称 = '__naiops_exit_receipt_key_v1';
 function 出口回执内容(receipt) {
-	return JSON.stringify([1, receipt.nonce, receipt.hostname, receipt.revision, receipt.issuedAt, receipt.ip, receipt.country]);
+	return JSON.stringify([2, receipt.nonce, receipt.hostname, receipt.revision, receipt.issuedAt, receipt.ip, receipt.country, receipt.regionCode, receipt.city]);
 }
 
 async function 出口回执密钥(env) {
@@ -6371,8 +6396,10 @@ async function 处理出口回执(request, env) {
 			if (canonical === '[2a06:98c0:3600::103]:443') throw new Error('synthetic Worker address');
 		}
 		catch { throw 区域错误('边缘出口地址无效。', 503); }
-		const receipt = { version: 1, nonce: values[0], hostname: url.hostname, revision: 发布版本,
-			issuedAt: Date.now(), ip, country };
+		const regionCode = typeof request.cf?.regionCode === 'string' && /^[A-Z0-9-]{1,8}$/.test(request.cf.regionCode) ? request.cf.regionCode : null;
+		const city = typeof request.cf?.city === 'string' && request.cf.city.length <= 128 && !/[\x00-\x1f\x7f]/.test(request.cf.city) ? request.cf.city : null;
+		const receipt = { version: 2, nonce: values[0], hostname: url.hostname, revision: 发布版本,
+			issuedAt: Date.now(), ip, country, regionCode, city };
 		const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await 出口回执密钥(env), new TextEncoder().encode(出口回执内容(receipt))));
 		receipt.signature = Array.from(mac, b => b.toString(16).padStart(2, '0')).join('');
 		return Response.json(receipt, { headers: { 'Cache-Control': 'no-store' } });
@@ -6380,19 +6407,23 @@ async function 处理出口回执(request, env) {
 }
 
 async function 验证出口回执(receipt, env, request, nonce, code) {
-	if (!receipt || receipt.version !== 1 || receipt.nonce !== nonce || receipt.hostname !== new URL(request.url).hostname ||
+	if (!receipt || receipt.version !== 2 || receipt.nonce !== nonce || receipt.hostname !== new URL(request.url).hostname ||
 		receipt.revision !== 发布版本 || !Number.isFinite(receipt.issuedAt) || receipt.issuedAt < Date.now() - 10000 ||
 		receipt.issuedAt > Date.now() + 2000 || typeof receipt.signature !== 'string' || !/^[0-9a-f]{64}$/.test(receipt.signature))
-		throw 区域错误('出口签名回执无效或过期。', 503);
+		throw Object.assign(区域错误('出口签名回执无效或过期。', 503), { invalidatesExit: true });
 	const signature = Uint8Array.from(receipt.signature.match(/../g), byte => parseInt(byte, 16));
 	if (!await crypto.subtle.verify('HMAC', await 出口回执密钥(env), signature, new TextEncoder().encode(出口回执内容(receipt))))
 		throw Object.assign(区域错误('出口回执签名不匹配。', 503), { invalidatesExit: true });
 	if (receipt.country !== code) throw Object.assign(区域错误('实际出口国家不符合所选区域。', 503), { invalidatesExit: true });
-	验证公共出口((receipt.ip?.includes(':') ? '[' + receipt.ip + ']' : receipt.ip) + ':443');
-	return { exitIP: receipt.ip, country: receipt.country, proofVerified: true };
+	try { 验证公共出口((receipt.ip?.includes(':') ? '[' + receipt.ip + ']' : receipt.ip) + ':443'); }
+	catch (error) { throw Object.assign(error, { invalidatesExit: true }); }
+	if (!有效地理字段(receipt)) throw Object.assign(区域错误('出口地理证据格式无效。', 503), { invalidatesExit: true });
+	return { exitIP: receipt.ip, country: receipt.country, proofVerified: true, receiptVersion: 2,
+		regionCode: receipt.regionCode, city: receipt.city, area: receipt.country === 'US' ? 美国州区域(receipt.regionCode) : null };
 }
 
 function 解析候选回执响应(text) {
+	try {
 	const split = text.indexOf('\r\n\r\n');
 	if (split < 0 || split > 4096 || text.length > 8192 || !/^HTTP\/1\.[01] 200(?: |\r\n)/.test(text))
 		throw 区域错误('出口回执未返回有效 HTTP 200。', 503);
@@ -6417,6 +6448,7 @@ function 解析候选回执响应(text) {
 	} else if (lengths.length && Number(lengths[0][1]) !== new TextEncoder().encode(body).byteLength)
 		throw 区域错误('出口回执长度不符。', 503);
 	try { return JSON.parse(body); } catch { throw 区域错误('出口回执不是有效 JSON。', 503); }
+	} catch (error) { throw Object.assign(error, { invalidatesExit: text.length > 0 }); }
 }
 
 async function 读取候选回执(address, hostname, nonce, signal) {
@@ -6439,7 +6471,7 @@ async function 读取候选回执(address, hostname, nonce, signal) {
 				let size = 0, text = ''; const decoder = new TextDecoder();
 				for (;;) {
 					const value = await socket.read(); if (!value) break;
-					size += value.byteLength; if (size > 8192) throw new Error('出口回执响应超过限制。');
+					size += value.byteLength; if (size > 8192) throw Object.assign(new Error('出口回执响应超过限制。'), { invalidatesExit: true });
 					text += decoder.decode(value, { stream: true });
 				}
 				return 解析候选回执响应(text + decoder.decode());
@@ -6451,6 +6483,74 @@ async function 读取候选回执(address, hostname, nonce, signal) {
 
 const 出口刷新间隔 = 15 * 60 * 1000, 出口有效期 = 30 * 60 * 1000;
 const 区域池实例状态 = new WeakMap();
+
+// Withdrawal outlives evictable pool views until persistence or the original proof expiry.
+const 区域撤销权威 = new WeakMap();
+function 读取撤销权威(kv) {
+	let authority = 区域撤销权威.get(kv);
+	if (!authority) { authority = { withdrawals: new Map(), blockedUntil: 0 }; 区域撤销权威.set(kv, authority); }
+	for (const [id, proof] of authority.withdrawals) if (proof.expiresAt <= Date.now()) authority.withdrawals.delete(id);
+	return authority;
+}
+function 撤销旧出口(kv, key, item) {
+	const authority = 读取撤销权威(kv), expiresAt = item.checkedAt + 出口有效期;
+	if (expiresAt <= Date.now()) return;
+	const id = key + ':' + item.address;
+	if (!authority.withdrawals.has(id) && authority.withdrawals.size >= 256) {
+		authority.blockedUntil = Math.max(authority.blockedUntil, expiresAt, ...Array.from(authority.withdrawals.values(), proof => proof.expiresAt));
+		return;
+	}
+	const old = authority.withdrawals.get(id);
+	authority.withdrawals.set(id, { key, checkedAt: Math.max(item.checkedAt, old?.checkedAt || 0), expiresAt: Math.max(expiresAt, old?.expiresAt || 0) });
+}
+function 允许当前证明(kv, key, item) {
+	const authority = 读取撤销权威(kv), withdrawal = authority.withdrawals.get(key + ':' + item.address);
+	return authority.blockedUntil <= Date.now() && (!withdrawal || item.checkedAt > withdrawal.checkedAt);
+}
+function 区域不可用状态(pool, region) {
+	if (!pool) return 'not_checked';
+	if (pool.exits.some(item => 有效区域出口(item, region))) return null;
+	const matching = pool.exits.filter(item => item.country === (region.country || region.code) && (!region.area || 出口所属区域(item) === region.area));
+	if (matching.some(item => item.checkedAt + 出口有效期 <= Date.now())) return 'expired';
+	if (pool.failures.some(item => item.address.startsWith('source'))) return 'source_failed';
+	const fresh = pool.exits.filter(item => 有效区域出口(item, { code: region.country || region.code }));
+	if (region.area && fresh.length && fresh.every(item => !出口所属区域(item))) return 'missing_geo';
+	return region.area ? 'area_unavailable' : 'country_unavailable';
+}
+
+const 美国州分组 = {
+	west: 'AK AZ CA CO HI ID MT NM NV OR UT WA WY',
+	east: 'CT DE DC FL GA MA MD ME NC NH NJ NY PA RI SC VA VT WV',
+	central: 'AL AR IA IL IN KS KY LA MI MN MO MS ND NE OH OK SD TN TX WI'
+};
+function 美国州区域(code) {
+	return Object.keys(美国州分组).find(area => 美国州分组[area].split(' ').includes(code)) || null;
+}
+function 有效地理字段(item) {
+	return (item.regionCode === null || (typeof item.regionCode === 'string' && /^[A-Z0-9-]{1,8}$/.test(item.regionCode))) &&
+		(item.city === null || (typeof item.city === 'string' && item.city.length <= 128 && !/[\x00-\x1f\x7f]/.test(item.city)));
+}
+function 出口所属区域(item) {
+	return item.receiptVersion === 2 && item.country === 'US' ? 美国州区域(item.regionCode) : null;
+}
+function 有效区域出口(item, region) {
+	return item.country === (region.country || region.code) && item.proofVerified === true &&
+		item.checkedAt + 出口有效期 > Date.now() && (!region.area || 出口所属区域(item) === region.area);
+}
+function 区域池视图(pool, region) {
+	if (!pool) return null;
+	const exits = pool.exits.filter(item => 有效区域出口(item, region)).map(item => ({ ...item }));
+	return { ...pool, region: region.code, country: region.country || region.code, area: region.area || null, exits,
+		failures: pool.failures.map(item => ({ ...item })), expiresAt: exits.length ? Math.max(...exits.map(item => item.checkedAt + 出口有效期)) : 0 };
+}
+function 区域池统计(pool, country) {
+	const view = 区域池视图(pool, { code: country });
+	const availableCounts = { [country]: view?.exits.length || 0 };
+	if (country === 'US') for (const child of 美国子区域)
+		availableCounts[child.code] = view?.exits.filter(item => 出口所属区域(item) === child.area).length || 0;
+	return { country, discoveredCount: pool?.discoveredCount || 0, probedCount: pool?.probedCount || 0,
+		availableCounts, lastAttemptAt: pool?.lastAttemptAt || null, nextRefreshAt: pool?.nextRefreshAt || null };
+}
 
 function 验证公共出口(value) {
 	const match = typeof value === 'string' && value.match(/^(\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):443$/);
@@ -6530,23 +6630,33 @@ async function 发现区域候选(region, signal, failures = []) {
 }
 
 async function 区域池缓存键(region, request) {
-	const material = JSON.stringify([发布版本, new URL(request.url).hostname, request.cf?.colo || 'unknown', region.code, region.exits, !!region.auto, region.source || null]);
+	const country = region.country || region.code;
+	const material = JSON.stringify([发布版本, new URL(request.url).hostname, request.cf?.colo || 'unknown', country, region.exits, !!region.auto, region.source || null]);
 	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material)));
-	return 'exit-pool:v2:' + region.code + ':' + Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+	return 'exit-pool:v3:' + country + ':' + Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function 验证出口池(pool, code) {
 	if (!pool || pool.version !== 1 || pool.region !== code || !Array.isArray(pool.exits) || pool.exits.length > 8 ||
 		!Array.isArray(pool.failures) || pool.failures.length > 8 || !Number.isFinite(pool.lastAttemptAt) ||
-		!Number.isFinite(pool.expiresAt) || !Number.isFinite(pool.nextRefreshAt) || pool.lastAttemptAt > Date.now() + 10000 ||
+		!Number.isFinite(pool.expiresAt) || !Number.isFinite(pool.nextRefreshAt) || pool.lastAttemptAt <= 0 || pool.expiresAt < 0 ||
+		pool.nextRefreshAt < pool.lastAttemptAt || pool.lastAttemptAt > Date.now() + 10000 ||
 		pool.nextRefreshAt > pool.lastAttemptAt + 出口刷新间隔 || pool.expiresAt > pool.lastAttemptAt + 出口有效期 + 12000 ||
-		new Set(pool.exits.map(item => item.address)).size !== pool.exits.length)
+		new Set(pool.exits.map(item => item?.address)).size !== pool.exits.length ||
+		(pool.cursor !== undefined && (!Number.isInteger(pool.cursor) || pool.cursor < 0 || pool.cursor > 31)) ||
+		(pool.discoveredCount !== undefined && (!Number.isInteger(pool.discoveredCount) || pool.discoveredCount < 0 || pool.discoveredCount > 32)) ||
+		(pool.probedCount !== undefined && (!Number.isInteger(pool.probedCount) || pool.probedCount < 0 || pool.probedCount > 4)))
 		throw 区域错误('出口检测缓存损坏，请立即刷新修复。', 503);
+	for (const failure of pool.failures)
+		if (!failure || typeof failure.address !== 'string' || failure.address.length > 80 || typeof failure.reason !== 'string' || failure.reason.length > 180 ||
+			(failure.invalidatesExit !== undefined && typeof failure.invalidatesExit !== 'boolean')) throw 区域错误('出口检测缓存错误详情无效。', 503);
 	for (const item of pool.exits) {
 		验证公共出口(item.address);
 		验证公共出口((item.exitIP?.includes(':') ? '[' + item.exitIP + ']' : item.exitIP) + ':443');
 		if (item.country !== code || item.proofVerified !== true || !Number.isFinite(item.latency) || item.latency < 0 || !Number.isFinite(item.checkedAt) ||
-			item.checkedAt <= 0 || item.checkedAt > Date.now() + 10000 || pool.expiresAt > item.checkedAt + 出口有效期)
+			item.checkedAt <= 0 || item.checkedAt > Date.now() + 10000 ||
+			(item.receiptVersion === 2 ? !有效地理字段(item) || item.area !== (code === 'US' ? 美国州区域(item.regionCode) : null) :
+				item.receiptVersion !== undefined || item.regionCode != null || item.city != null || item.area != null))
 			throw 区域错误('出口检测缓存包含未经有效验证的结果。', 503);
 	}
 	return pool;
@@ -6557,6 +6667,7 @@ async function 读取出口池状态(env, region, request, repair = false) {
 	let state = 区域池实例状态.get(env.KV);
 	if (!state) { state = new Map(); 区域池实例状态.set(env.KV, state); }
 	const key = await 区域池缓存键(region, request);
+	if (读取撤销权威(env.KV).blockedUntil > Date.now()) throw 区域错误('出口撤销记录达到保护上限，请等待旧证明过期。', 503);
 	if (!state.has(key)) {
 		if (state.size >= 32) { for (const [oldKey, oldEntry] of state) { if (!oldEntry.pending) { state.delete(oldKey); break; } } }
 		const entry = { pool: null, pending: null };
@@ -6564,22 +6675,24 @@ async function 读取出口池状态(env, region, request, repair = false) {
 			let value;
 			try { value = await env.KV.get(key); }
 			catch { state.delete(key); throw 区域错误('出口缓存读取失败。', 503); }
-			try { entry.pool = value === null ? null : 验证出口池(JSON.parse(value), region.code); }
+			try { entry.pool = value === null ? null : 验证出口池(JSON.parse(value), region.country || region.code); }
 			catch { if (!repair) { state.delete(key); throw 区域错误('出口缓存损坏，请立即刷新修复。', 503); } }
 		})(); state.set(key, entry);
 	}
 	const entry = state.get(key); await entry.loaded;
+	if (entry.pool) entry.pool = { ...entry.pool, exits: entry.pool.exits.filter(item => 允许当前证明(env.KV, key, item)) };
 	return { key, entry };
 }
 
 async function 刷新区域出口池(env, region, request, key, entry) {
+	region = { ...region, code: region.country || region.code, area: null };
 	const old = entry.pool, now = Date.now(), controller = new AbortController();
 	let timer;
 	const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
 		controller.abort(); reject(new Error('出口发现或检测超过 12 秒限制。'));
 	}, 12000); });
 	const failures = [], checked = [];
-	let candidates = [], cursor = Number.isInteger(old?.cursor) ? old.cursor : 0;
+	let candidates = [], probedCount = 0, cursor = Number.isInteger(old?.cursor) ? old.cursor : 0;
 	try {
 		await Promise.race([确保出口回执密钥(env), deadline]);
 		candidates = await Promise.race([发现区域候选(region, controller.signal, failures), deadline]);
@@ -6592,41 +6705,76 @@ async function 刷新区域出口池(env, region, request, key, entry) {
 		for (let offset = 0; offset < selected.length && !controller.signal.aborted; offset += 2) {
 			await Promise.race([Promise.all(selected.slice(offset, offset + 2).map(async address => {
 				try {
+					probedCount++;
 					const result = await 探测区域出口(address, region.code, controller.signal, env, request);
-					if (controller.signal.aborted) return;
 					验证出口池({ version: 1, region: region.code, exits: [result], failures: [], lastAttemptAt: Date.now(), expiresAt: result.checkedAt + 出口有效期, nextRefreshAt: Date.now() }, region.code);
+					const previous = old?.exits.find(item => item.address === address);
+					if (previous && (previous.regionCode !== result.regionCode || previous.receiptVersion !== result.receiptVersion))
+						撤销旧出口(env.KV, key, previous);
+					if (controller.signal.aborted) return;
 					checked.push(result);
-				} catch (error) { if (!controller.signal.aborted) failures.push({ address, reason: String(error.message).slice(0, 180),
-					invalidatesExit: error.invalidatesExit === true || /certificate|hostname mismatch/i.test(error.message) }); }
+				} catch (error) {
+					const invalidatesExit = error.invalidatesExit === true || /certificate|hostname mismatch/i.test(error.message);
+					const previous = old?.exits.find(item => item.address === address);
+					if (invalidatesExit && previous) 撤销旧出口(env.KV, key, previous);
+					if (!controller.signal.aborted) failures.push({ address, reason: String(error.message).slice(0, 180), invalidatesExit });
+				}
 			})), deadline]);
 		}
 	} catch (error) { failures.push({ address: 'source', reason: String(error.message).slice(0, 180) }); }
 	finally { clearTimeout(timer); controller.abort(); }
 	const order = old?.exits[0]?.address;
 	checked.sort((a, b) => (a.address === order ? -1 : b.address === order ? 1 : a.latency - b.latency));
-	const retained = old?.exits.filter(item => !failures.some(failure => failure.address === item.address && failure.invalidatesExit)) || [];
-	// Revocation must survive a KV write outage; newly accepted exits still require persistence.
-	if (old && retained.length !== old.exits.length) entry.pool = { ...old, exits: retained, failures,
-		expiresAt: retained.length ? old.expiresAt : now, nextRefreshAt: now };
-	const pool = checked.length ? { version: 1, region: region.code, exits: checked.slice(0, 8), failures, cursor,
-		lastAttemptAt: now, nextRefreshAt: now + 出口刷新间隔, expiresAt: Math.min(...checked.map(item => item.checkedAt)) + 出口有效期 }
-		: old && old.expiresAt > Date.now() && retained.length ? { ...old, exits: retained, failures, cursor, lastAttemptAt: now, nextRefreshAt: now + 60000 }
-			: { version: 1, region: region.code, exits: [], failures, cursor, lastAttemptAt: now, nextRefreshAt: now + 60000, expiresAt: now };
+	const retained = old?.exits.filter(item => 有效区域出口(item, region) && 允许当前证明(env.KV, key, item) &&
+		!failures.some(failure => failure.address === item.address && failure.invalidatesExit) &&
+		!checked.some(result => result.address === item.address && (result.regionCode !== item.regionCode || result.receiptVersion !== item.receiptVersion))) || [];
+	for (const item of old?.exits || []) if (!retained.includes(item)) 撤销旧出口(env.KV, key, item);
+	// Remove revoked evidence in memory before persistence; accepted replacements require a successful KV write.
+	if (old) entry.pool = { ...old, exits: retained, failures: failures.slice(0, 8), cursor,
+		discoveredCount: candidates.length, probedCount, lastAttemptAt: now, nextRefreshAt: now + 60000,
+		expiresAt: retained.length ? Math.max(...retained.map(item => item.checkedAt + 出口有效期)) : now };
+	else entry.pool = { version: 1, region: region.code, exits: [], failures: failures.slice(0, 8), cursor, lastAttemptAt: now,
+		nextRefreshAt: now + 60000, expiresAt: now, discoveredCount: candidates.length, probedCount };
+	const merged = [...checked, ...retained.filter(item => !checked.some(result => result.address === item.address))];
+	merged.sort((a, b) => (a.address === order ? -1 : b.address === order ? 1 : a.latency - b.latency));
+	const exits = [];
+	if (merged[0]) exits.push(merged[0]);
+	// Preserve one candidate per observed area before filling the bounded pool.
+	if (region.code === 'US') for (const child of 美国子区域) {
+		const item = merged.find(item => 出口所属区域(item) === child.area);
+		if (item && !exits.includes(item)) exits.push(item);
+	}
+	for (const item of merged) if (exits.length < 8 && !exits.includes(item)) exits.push(item);
+	const pool = { version: 1, region: region.code, exits, failures: failures.slice(0, 8), cursor,
+		discoveredCount: candidates.length, probedCount, lastAttemptAt: now,
+		nextRefreshAt: now + (checked.length ? 出口刷新间隔 : 60000),
+		expiresAt: exits.length ? Math.max(...exits.map(item => item.checkedAt + 出口有效期)) : now };
+
 	try { await env.KV.put(key, JSON.stringify(pool), { expirationTtl: 3600 }); }
 	catch { throw 区域错误('出口检测结果保存失败。', 503); }
+	const authority = 读取撤销权威(env.KV);
+	for (const [id, proof] of authority.withdrawals)
+		if (proof.key === key && !pool.exits.some(item => id === key + ':' + item.address && item.checkedAt <= proof.checkedAt)) authority.withdrawals.delete(id);
 	entry.pool = pool; return pool;
 }
 
 async function 获取有效区域池(env, region, request, force = false) {
 	const { key, entry } = await 读取出口池状态(env, region, request, force);
-	const now = Date.now(), old = entry.pool;
+	const now = Date.now(), old = entry.pool, selected = 区域池视图(old, region);
 	if (force && old && now - old.lastAttemptAt < 60000) throw 区域错误('刷新操作过于频繁，请稍后再试。', 429);
-	if (!entry.pending && (force || !old || now >= old.nextRefreshAt)) {
+	const missingArea = region.area && !selected?.exits.length && old && now - old.lastAttemptAt >= 60000;
+	if (!entry.pending && (force || !old || now >= old.nextRefreshAt || missingArea)) {
 		entry.pending = 刷新区域出口池(env, region, request, key, entry);
 		entry.pending.finally(() => { entry.pending = null; }).catch(() => {});
 	}
-	const pool = entry.pending ? await entry.pending : entry.pool;
-	if (!pool || !pool.exits.length || pool.expiresAt <= Date.now()) throw 区域错误('当前区域没有未过期的有效出口，请稍后刷新。', 503);
+	const currentPool = entry.pending ? await entry.pending : entry.pool;
+	if (读取撤销权威(env.KV).blockedUntil > Date.now()) throw 区域错误('出口撤销记录达到保护上限，请等待旧证明过期。', 503);
+	const pool = 区域池视图(currentPool && { ...currentPool, exits: currentPool.exits.filter(item => 允许当前证明(env.KV, key, item)) }, region);
+	if (!pool?.exits.length) throw 区域错误('当前区域没有未过期的有效出口，请稍后刷新。', 503);
+	pool.验证当前出口 = item => {
+		const current = 区域池实例状态.get(env.KV)?.get(key)?.pool?.exits.find(exit => exit.address === item.address);
+		return !!current && 允许当前证明(env.KV, key, item) && 有效区域出口(current, region) && 有效区域出口(item, region);
+	};
 	return pool;
 }
 const 反代协议默认端口 = { socks5: 1080, http: 80, https: 443, turn: 3478, sstp: 443 };
