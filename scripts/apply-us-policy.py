@@ -21,6 +21,7 @@ def apply_policy(source):
     admin = '\t\tconst 管理员密码 = env.ADMIN || env.admin || env.PASSWORD || env.password || env.pswd || env.TOKEN || env.KEY || env.UUID || env.uuid;'
     replace_once(admin, "\t\tconst 管理员密码 = env.ADMIN;\n"
                  "\t\tif (!管理员密码) return new Response('请先在 Cloudflare 设置 ADMIN。', { status: 503, headers: { 'Cache-Control': 'no-store' } });\n"
+                 "\t\tif (url.pathname === '/__naiops_exit_probe') return await 处理出口回执(request, env);\n"
                  "\t\tif (url.pathname === '/healthz') return Response.json({ status: env.KV ? 'ready' : 'missing-kv', revision: 发布版本 }, { status: env.KV ? 200 : 503, headers: { 'Cache-Control': 'no-store' } });")
     replace_once('反代并发拨号数 = Math.max(1, Number(env.PROXY_CONCURRENT_DIAL) || 反代并发拨号数);', '反代并发拨号数 = 1;')
     config_reader = 'async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重置配置 = false) {'
@@ -59,7 +60,7 @@ def apply_policy(source):
                  "\tcloseSocketQuietly(webSocket);\n\tthrow new Error('本分支仅支持 TCP，UDP/DNS 转发已禁用。');\n}")
     start = result.index('async function 反代参数获取(')
     end = result.index('const 反代协议默认端口', start)
-    policy = (ROOT / 'policy/regions.js').read_text() + '\n' + (ROOT / 'policy/auto-exits.js').read_text()
+    policy = '\n'.join((ROOT / file).read_text() for file in ['policy/regions.js', 'policy/exit-proof.js', 'policy/auto-exits.js'])
     panel = json.dumps((ROOT / 'policy/regions.html').read_text(), ensure_ascii=False)
     replace_once(result[start:end], 'const 区域管理页面 = ' + panel + ';\n' + policy)
     start = result.index('\tconst 排序后数组 = 所有反代数组.sort(')

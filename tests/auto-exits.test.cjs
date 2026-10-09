@@ -7,14 +7,15 @@ const path = require('node:path');
 
 function fixture() {
   let now = 1800000000000;
-  const store = new Map(), probes = [], writes = [];
+  const store = new Map([['__naiops_exit_receipt_key_v1','1'.repeat(64)]]), probes = [], writes = [];
   const s = { URL, URLSearchParams, Response, Request, TextEncoder, TextDecoder, ReadableStream,
     WritableStream, AbortController, AbortSignal, crypto: webcrypto, performance, setTimeout, clearTimeout,
     Date: class extends Date { static now() { return now; } }, 发布版本: 'fixture-release',
     区域错误: (message, status = 400) => Object.assign(new Error(message), { status }) };
   const file = path.resolve(__dirname, '../policy/auto-exits.js');
-  vm.createContext(s); vm.runInContext(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '', s);
-  const env = { KV: { get: async key => store.get(key) ?? null,
+  vm.createContext(s); vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../policy/exit-proof.js'), 'utf8') + '\n' + fs.readFileSync(file, 'utf8'), s);
+  s.区域错误响应 = error => Response.json({error:error.message},{status:error.status||503});
+  const env = { ADMIN: 'test-only-private-key', KV: { get: async key => store.get(key) ?? null,
     put: async (key, value) => { writes.push(key); store.set(key, value); } } };
   const request = new Request('https://us.naiops.ccwu.cc/');
   Object.defineProperty(request, 'cf', { value: { colo: 'SJC' } });
@@ -22,9 +23,13 @@ function fixture() {
   const nativeProbe = s.探测区域出口;
   s.探测区域出口 = async (address, country) => {
     probes.push(address);
-    return { address, exitIP: address.split(':')[0], country, checkedAt: now, latency: 5, tlsNameVerified: true };
+    return { address, exitIP: address.split(':')[0], country, checkedAt: now, latency: 5, proofVerified: true };
   };
-  return { s, nativeProbe, env, request, region, store, probes, writes, advance: ms => { now += ms; } };
+  async function signedReceipt(country, nonce) {
+    const req=new Request(request.url+'__naiops_exit_probe?nonce='+nonce,{headers:{'CF-Connecting-IP':'3.132.174.45'}});
+    Object.defineProperty(req,'cf',{value:{country}});return (await s.处理出口回执(req,env)).json();
+  }
+  return { s, nativeProbe, env, request, region, store, probes, writes, signedReceipt, advance: ms => { now += ms; } };
 }
 
 test('only canonical public IPs and port 443 may be discovery candidates', () => {
@@ -35,15 +40,6 @@ test('only canonical public IPs and port 443 may be discovery candidates', () =>
     '100.64.1.1:443', '198.51.100.1:443', '224.1.1.1:443', '[::1]:443', '[::ffff:7f00:1]:443',
     '[fc00::1]:443', '[fe80::1]:443', '[2001:db8::1]:443', '03.1.2.3:443', 'host.test:443', '3.132.174.45:80'])
     assert.throws(() => s.验证公共出口(value), undefined, value);
-});
-
-test('trace requires HTTP 200, public exit address and the selected country', () => {
-  const { s } = fixture();
-  const good = 'HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nip=3.132.174.45\nloc=US\n';
-  assert.equal(s.解析出口检测响应(good, 'US').country, 'US');
-  for (const body of [good.replace('200', '403'), good.replace('US', 'JP'), good.replace('loc=US', ''),
-    good.replace('3.132.174.45', '127.0.0.1'), good + 'loc=JP\n'])
-    assert.throws(() => s.解析出口检测响应(body, 'US'));
 });
 
 test('fresh checked pool is reused without source fetch or extra probes', async () => {
@@ -77,12 +73,12 @@ test('a forced refresh keeps a healthy primary before a faster new candidate', a
   assert.equal(pool.exits[0].address, '3.132.174.45:443');
 });
 
-test('aborting native TLS stops promptly and never upgrades a late opening socket', async () => {
+test('aborting receipt transport stops promptly before a late socket can handshake', async () => {
   const f = fixture(); let open, upgrades = 0;
-  f.s.connect = () => ({ opened: new Promise(resolve => { open = resolve; }),
-    close: async () => {}, startTls() { upgrades++; throw new Error('late upgrade'); } });
+  f.s.connect = () => ({ opened: new Promise(resolve => { open = resolve; }), close: async () => {} });
+  f.s.TlsClient = class {constructor(){upgrades++;throw new Error('late handshake');}};
   const controller = new AbortController();
-  const probe = f.s.读取验证TLS响应('3.132.174.45:443', 'www.cloudflare.com', controller.signal);
+  const probe = f.s.读取候选回执('3.132.174.45:443', 'proof.example.com', 'a'.repeat(32), controller.signal);
   controller.abort();
   await assert.rejects(Promise.race([probe, new Promise((_, reject) => setTimeout(() => reject(new Error('abort did not stop')), 100))]), /取消/);
   open(); await new Promise(resolve => setTimeout(resolve, 0));
@@ -166,39 +162,32 @@ test('DNS source is fixed, public-only, deduplicated and bounded', async () => {
 });
 
 test('unverified or mismatched country probe results cannot enter a pool', async () => {
-  for (const patch of [{ country: 'JP' }, { tlsNameVerified: false }, { checkedAt: 0 }]) {
+  for (const patch of [{ country: 'JP' }, { proofVerified: false }, { checkedAt: 0 }]) {
     const f = fixture(); const original = f.s.探测区域出口;
     f.s.探测区域出口 = async (...args) => ({ ...await original(...args), ...patch });
     await assert.rejects(f.s.获取有效区域池(f.env, f.region, f.request), /出口/);
   }
 });
 
-test('TLS probe requires the wrong-hostname connection to be rejected', async () => {
-  const f = fixture();
-  f.s.探测区域出口 = f.nativeProbe;
-  const trace = 'HTTP/1.0 200 OK\r\n\r\nip=3.132.174.45\nloc=US\n';
-  f.s.读取验证TLS响应 = async () => trace;
-  await assert.rejects(f.s.探测区域出口('3.132.174.45:443', 'US'), /域名|证书/);
+test('successful transport cannot enable an unsigned country claim', async () => {
+  const f=fixture();f.s.读取候选回执=async()=>({country:'US',ip:'3.132.174.45'});
+  await assert.rejects(f.nativeProbe('3.132.174.45:443','US',undefined,f.env,f.request),/回执/);
 });
 
-test('ordinary TLS resets are never treated as certificate-name validation', async () => {
-  const f=fixture(); const trace='HTTP/1.0 200 OK\r\n\r\nip=3.132.174.45\nloc=US\n';
-  f.s.读取验证TLS响应=async (_,name)=>{if(name==='www.cloudflare.com')return trace;
-    throw Object.assign(new Error('connection reset by peer'),{probeStage:'tls'});};
-  await assert.rejects(f.nativeProbe('3.132.174.45:443','US'),/证书/);
+test('ordinary transport resets cannot enable a claimed exit', async () => {
+  const f=fixture();f.s.读取候选回执=async()=>{throw new Error('connection reset by peer');};
+  await assert.rejects(f.nativeProbe('3.132.174.45:443','US',undefined,f.env,f.request),/reset/);
 });
 
-test('explicit TLS certificate hostname refusal permits a correctly checked US exit', async () => {
-  const f=fixture();const trace='HTTP/1.0 200 OK\r\n\r\nip=3.132.174.45\nloc=US\n';
-  f.s.读取验证TLS响应=async(_,name)=>{if(name==='www.cloudflare.com')return trace;
-    throw Object.assign(new Error('Hostname/IP does not match certificate alt names'),{probeStage:'tls',code:'ERR_TLS_CERT_ALTNAME_INVALID'});};
-  assert.equal((await f.nativeProbe('3.132.174.45:443','US')).tlsNameVerified,true);
+test('authentic country receipt permits a checked US exit without claiming certificate verification', async () => {
+  const f=fixture();f.s.读取候选回执=async(_,host,nonce)=>f.signedReceipt('US',nonce);
+  assert.equal((await f.nativeProbe('3.132.174.45:443','US',undefined,f.env,f.request)).proofVerified,true);
 });
 
 test('new evidence of another country immediately removes the old US exit', async () => {
   const f=fixture(); await f.s.获取有效区域池(f.env,f.region,f.request);f.advance(16*60000);
   f.s.探测区域出口=f.nativeProbe;
-  f.s.读取验证TLS响应=async()=> 'HTTP/1.0 200 OK\r\n\r\nip=3.132.174.45\nloc=JP\n';
+  f.s.读取候选回执=async(_,host,nonce)=>f.signedReceipt('JP',nonce);
   await assert.rejects(f.s.获取有效区域池(f.env,f.region,f.request),/出口/);
   const {entry}=await f.s.读取出口池状态(f.env,f.region,f.request);
   assert.equal(entry.pool.exits.length,0);
@@ -206,18 +195,17 @@ test('new evidence of another country immediately removes the old US exit', asyn
 
 test('KV write outage cannot resurrect an exit already found in another country', async () => {
   const f=fixture();await f.s.获取有效区域池(f.env,f.region,f.request);f.advance(16*60000);
-  f.s.探测区域出口=f.nativeProbe;f.s.读取验证TLS响应=async()=> 'HTTP/1.0 200 OK\r\n\r\nip=3.132.174.45\nloc=JP\n';
+  f.s.探测区域出口=f.nativeProbe;f.s.读取候选回执=async(_,host,nonce)=>f.signedReceipt('JP',nonce);
   const put=f.env.KV.put;f.env.KV.put=async()=>{throw new Error('KV write outage');};
   await assert.rejects(f.s.获取有效区域池(f.env,f.region,f.request),/保存/);
   f.env.KV.put=put;f.s.探测区域出口=async()=>{throw new Error('offline');};
   await assert.rejects(f.s.获取有效区域池(f.env,f.region,f.request),/出口/);
 });
 
-test('native TLS opened failure is observed and both socket closed rejections handled', async () => {
-  const f=fixture();const error=new Error('certificate hostname mismatch');let closedHandled=0;
+test('receipt transport opening failure handles closed rejection and closes the socket', async () => {
+  const f=fixture();const error=new Error('offline');let closedHandled=0,closes=0;
   const closed={catch(fn){closedHandled++;fn(error);return Promise.resolve();}};
-  f.s.connect=()=>({opened:Promise.resolve(),closed,close:async()=>{},startTls:()=>({
-    opened:Promise.reject(error),closed,close:async()=>{},writable:new WritableStream({write(){throw error;}}),readable:new ReadableStream()})});
-  await assert.rejects(f.s.读取验证TLS响应('3.132.174.45:443'),/certificate/);
-  assert.equal(closedHandled,2);
+  f.s.connect=()=>({opened:Promise.reject(error),closed,close:async()=>{closes++;}});
+  await assert.rejects(f.s.读取候选回执('3.132.174.45:443','proof.example.com','a'.repeat(32)),/offline/);
+  assert.equal(closedHandled,1);assert.ok(closes>0);
 });

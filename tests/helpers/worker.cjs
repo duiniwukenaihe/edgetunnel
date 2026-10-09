@@ -30,7 +30,7 @@ async function seedVerifiedPool(s, env, config, request) {
   for (const region of config.regions) {
     const now = Date.now();
     const pool = {version:1,region:region.code,exits:region.exits.map(address => ({address,
-      exitIP:address.slice(0,-4).replace(/^\[|\]$/g,''),country:region.code,checkedAt:now,latency:5,tlsNameVerified:true})),
+      exitIP:address.slice(0,-4).replace(/^\[|\]$/g,''),country:region.code,checkedAt:now,latency:5,proofVerified:true})),
       failures:[],cursor:0,lastAttemptAt:now,nextRefreshAt:now+900000,expiresAt:now+1800000};
     await env.KV.put(await s.区域池缓存键(region, request), JSON.stringify(pool));
   }

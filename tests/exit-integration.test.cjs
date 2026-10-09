@@ -3,13 +3,13 @@ const assert = require('node:assert/strict');
 const { load, socket, UUID } = require('./helpers/worker.cjs');
 const origin = 'https://us.naiops.ccwu.cc';
 function fixture() {
-  const calls = [], probes = [], tasks = [], store = new Map();
+  const calls = [], probes = [], tasks = [], store = new Map([['__naiops_exit_receipt_key_v1', '1'.repeat(64)]]);
   const s = load(({hostname}) => { calls.push(hostname); return socket(hostname, false); });
   const env = { ADMIN: 'integration-only', UUID, OFF_LOG: 'true', KV: {
     get: async key => store.get(key) ?? null, put: async (key, value) => store.set(key, value) } };
   s.发现区域候选 = async () => ['192.9.157.76:443'];
   s.探测区域出口 = async (address, country) => { probes.push(address); return {
-    address, country, exitIP: '8.8.8.8', latency: 5, checkedAt: Date.now(), tlsNameVerified: true }; };
+    address, country, exitIP: '8.8.8.8', latency: 5, checkedAt: Date.now(), proofVerified: true }; };
   s.fetch = async () => new Response('external fixture');
   let cookie = '';
   async function request(path, options = {}, authenticated = false) {

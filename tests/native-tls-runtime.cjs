@@ -1,48 +1,53 @@
 const {spawn,execFileSync}=require('node:child_process');
-const tls=require('node:tls'),net=require('node:net'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict');
-const binary=process.env.WORKERD_BINARY;
-if(!binary||!fs.existsSync(binary))throw new Error('Set WORKERD_BINARY to an existing workerd executable.');
-const output=process.argv[2];if(!output)throw new Error('Provide an external JSON report path.');
-const directory=fs.mkdtempSync(path.join(os.tmpdir(),'naiops-tls-preflight-'));
-const report={purpose:'production policy TLS functions in native workerd with controlled CA fixtures',pid:process.pid,temporaryDirectory:directory,results:[]};
-let worker,validServer,badServer,childLog='';
+const tls=require('node:tls'),net=require('node:net'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {createHmac,createHash}=require('node:crypto'),assert=require('node:assert/strict');
+const binary=process.env.WORKERD_BINARY,output=process.argv[2];
+if(!binary||!fs.existsSync(binary)||!output)throw new Error('Existing WORKERD_BINARY and external JSON report path required.');
+const directory=fs.mkdtempSync(path.join(os.tmpdir(),'naiops-proof-runtime-'));
+const report={purpose:'actual upstream TLS transport and authenticated country receipt in native workerd',pid:process.pid,temporaryDirectory:directory,results:[]};
+const key='1'.repeat(64),servers=[];let worker,childLog='';
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
-const close=server=>new Promise(resolve=>server?server.close(resolve):resolve());
-function cert(name){execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',directory+'/'+name+'.key','-out',directory+'/'+name+'.crt','-days','1','-subj','/CN=www.cloudflare.com','-addext','subjectAltName=DNS:www.cloudflare.com'],{stdio:'ignore'});return {key:fs.readFileSync(directory+'/'+name+'.key'),cert:fs.readFileSync(directory+'/'+name+'.crt')};}
+const close=server=>new Promise(resolve=>server.close(resolve));
 (async()=>{
  try{
-  const valid=cert('valid'),bad=cert('bad');
-  validServer=tls.createServer(valid,s=>s.on('data',()=>s.end('HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nip=3.132.174.45\nloc=US\n')));validServer.on('tlsClientError',()=>{});
-  badServer=tls.createServer(bad,s=>s.on('data',()=>s.end('HTTP/1.0 200 OK\r\n\r\nloc=US\n')));badServer.on('tlsClientError',()=>{});
-  const validPort=await listen(validServer),badPort=await listen(badServer);
+  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',directory+'/key.pem','-out',directory+'/cert.pem','-days','1','-subj','/CN=proof.example.com','-addext','subjectAltName=DNS:proof.example.com'],{stdio:'ignore'});
+  const cert={key:fs.readFileSync(directory+'/key.pem'),cert:fs.readFileSync(directory+'/cert.pem'),minVersion:'TLSv1.3',maxVersion:'TLSv1.3'};
+  const ports={};
+  for(const mode of ['valid','wrongcountry','forged','stale','replay','wronghost','wrongrelease']){
+   const server=tls.createServer(cert,socket=>socket.once('data',data=>{
+    assert.equal(socket.servername,'proof.example.com');
+    const nonce=new URL(data.toString().split(' ')[1],'https://proof.example.com').searchParams.get('nonce');
+    const receipt={version:1,nonce:mode==='replay'?'0'.repeat(32):nonce,hostname:mode==='wronghost'?'other.example.com':'proof.example.com',revision:mode==='wrongrelease'?'other-release':'__NAIOPS_RELEASE_SHA__',issuedAt:Date.now()-(mode==='stale'?30000:0),ip:'3.132.174.45',country:mode==='wrongcountry'?'JP':'US'};
+    const signingKey=Buffer.from(key,'hex');
+    receipt.signature=createHmac('sha256',signingKey).update(JSON.stringify([1,receipt.nonce,receipt.hostname,receipt.revision,receipt.issuedAt,receipt.ip,receipt.country])).digest('hex');
+    if(mode==='forged')receipt.signature='0'.repeat(64);
+    const body=JSON.stringify(receipt);socket.end('HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: '+Buffer.byteLength(body)+'\r\n\r\n'+body);
+   }));server.on('tlsClientError',()=>{});servers.push(server);ports[mode]=await listen(server);
+  }
   const reservation=net.createServer();const httpPort=await listen(reservation);await close(reservation);
-  const policy=fs.readFileSync(path.resolve(__dirname,'../policy/auto-exits.js'),'utf8');
-  report.policySha256=require('node:crypto').createHash('sha256').update(policy).digest('hex');
-  const script=`import {connect as nativeConnect} from 'cloudflare:sockets';
-let fixtureMode;
-function connect(address,options){return nativeConnect({hostname:'127.0.0.1',port:fixtureMode==='/badcert'?${badPort}:${validPort}},options);}
-function 区域错误(message,status=400){return Object.assign(new Error(message),{status});}
-const 发布版本='controlled-fixture';
-${policy}
-export default {async fetch(request){fixtureMode=new URL(request.url).pathname;
-try{if(fixtureMode==='/pool'){const result=await 探测区域出口('3.132.174.45:443','US');return Response.json({success:true,result});}
- const text=await 读取验证TLS响应('3.132.174.45:443',fixtureMode==='/wrongname'?'invalid.naiops.test':'www.cloudflare.com');const result=解析出口检测响应(text,'US');return Response.json({success:true,result});}
-catch(e){return Response.json({success:false,error:e.message,stage:e.probeStage});}
-}};`;
+  const source=fs.readFileSync(process.env.NAIOPS_SOURCE||path.resolve(__dirname,'../_worker.js'),'utf8');
+  report.sourceSha256=createHash('sha256').update(source).digest('hex');
+  const script=source.replace("import { connect } from 'cloudflare:sockets';",`import {connect as nativeConnect} from 'cloudflare:sockets';
+let fixtureMode='valid';const fixturePorts=${JSON.stringify(ports)};
+function connect(address,options){return nativeConnect({hostname:'127.0.0.1',port:fixturePorts[fixtureMode]},options);}`).replace('export default {','const originalWorker = {')+`
+export default {async fetch(request){fixtureMode=new URL(request.url).pathname.slice(1)||'valid';
+try{const result=await 探测区域出口('3.132.174.45:443','US',undefined,{KV:{get:async()=>${JSON.stringify(key)}}},new Request('https://proof.example.com/'));return Response.json({success:true,result});}
+catch(error){return Response.json({success:false,error:error.message});}}};`;
   fs.writeFileSync(directory+'/worker.js',script);
   fs.writeFileSync(directory+'/config.capnp',`using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "probe",worker = (modules = [(name = "main",esModule = embed "worker.js")],compatibilityDate = "2026-10-08")),(name = "internet",network = (allow = ["local"],tlsOptions = (trustBrowserCas = true,trustedCertificates = [embed "valid.crt"])))],sockets = [(name = "http",address = "127.0.0.1:${httpPort}",http = (),service = "probe")]);`);
+const config :Workerd.Config = (services = [(name = "probe",worker = (modules = [(name = "main",esModule = embed "worker.js")],compatibilityDate = "2026-10-08")),(name = "internet",network = (allow = ["local"]))],sockets = [(name = "http",address = "127.0.0.1:${httpPort}",http = (),service = "probe")]);`);
   worker=spawn(binary,['serve',directory+'/config.capnp'],{stdio:['ignore','pipe','pipe']});report.workerPid=worker.pid;
   worker.stdout.on('data',b=>childLog+=b);worker.stderr.on('data',b=>childLog+=b);
-  for(let attempt=0;attempt<60;attempt++){try{const r=await fetch('http://127.0.0.1:'+httpPort+'/valid');report.results.push({mode:'/valid',...await r.json()});break;}catch{await new Promise(r=>setTimeout(r,50));}}
-  for(const mode of ['/wrongname','/badcert','/pool'])report.results.push({mode,...await(await fetch('http://127.0.0.1:'+httpPort+mode)).json()});
-  console.log(JSON.stringify(report.results));
-  assert.equal(report.results[0].success,true);assert.equal(report.results[1].success,false);assert.equal(report.results[2].success,false);
-  assert.equal(report.results[0].result.country,'US');assert.equal(report.results[1].stage,'tls');assert.equal(report.results[2].stage,'tls');if(!report.results[3].success)assert.match(report.results[3].error,/明确/);report.safetyTestsPassed=true;report.runtimeReady=report.results[3].success;
-  if(!report.runtimeReady)report.blocker='Native runtime hides certificate-name errors as generic Network connection lost; strict pool gate correctly rejects the candidate.';
+  for(let attempt=0;attempt<60;attempt++){try{const r=await fetch('http://127.0.0.1:'+httpPort+'/valid');report.results.push({mode:'valid',...await r.json()});break;}catch{await new Promise(r=>setTimeout(r,50));}}
+  for(const mode of Object.keys(ports).slice(1))report.results.push({mode,...await(await fetch('http://127.0.0.1:'+httpPort+'/'+mode)).json()});
+  assert.equal(report.results.length,7);assert.equal(report.results[0].success,true);
+  assert.equal(report.results[0].result.proofVerified,true);assert.equal(report.results[0].result.tlsNameVerified,undefined);
+  for(const result of report.results.slice(1))assert.equal(result.success,false,result.mode);
+  report.safetyTestsPassed=true;report.runtimeReady=true;
  }finally{
-  if(worker&&worker.exitCode===null&&worker.signalCode===null){worker.kill('SIGTERM');await new Promise(resolve=>worker.once('exit',resolve));}await close(validServer);await close(badServer);
+  if(worker&&worker.exitCode===null&&worker.signalCode===null){worker.kill('SIGTERM');await new Promise(resolve=>worker.once('exit',resolve));}
+  for(const server of servers)await close(server);
   report.log=childLog;fs.rmSync(directory,{recursive:true,force:true});report.cleaned=!fs.existsSync(directory);
   fs.writeFileSync(output,JSON.stringify(report,null,2));
  }
-})().catch(e=>{console.error(e.message);process.exitCode=1;});
+})().catch(error=>{console.error(error.message);process.exitCode=1;}).finally(()=>console.log(JSON.stringify(report.results)));

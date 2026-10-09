@@ -1,6 +1,5 @@
 const 出口刷新间隔 = 15 * 60 * 1000, 出口有效期 = 30 * 60 * 1000;
 const 区域池实例状态 = new WeakMap();
-const 出口检测主机 = 'www.cloudflare.com';
 
 function 验证公共出口(value) {
 	const match = typeof value === 'string' && value.match(/^(\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):443$/);
@@ -24,76 +23,17 @@ function 验证公共出口(value) {
 	return host + ':443';
 }
 
-function 解析出口检测响应(text, code) {
-	const split = text.indexOf('\r\n\r\n');
-	if (split < 0 || !/^HTTP\/1\.[01] 200(?: |\r\n)/.test(text)) throw 区域错误('出口检测未返回 HTTP 200。', 503);
-	const lines = text.slice(split + 4).trim().split(/\r?\n/);
-	const ips = lines.filter(line => line.startsWith('ip=')), countries = lines.filter(line => line.startsWith('loc='));
-	if (ips.length !== 1 || countries.length !== 1 || countries[0] !== 'loc=' + code)
-		throw Object.assign(区域错误('实际出口国家未知或不符合所选区域。', 503), { invalidatesExit: true });
-	const exitIP = ips[0].slice(3);
-	验证公共出口((exitIP.includes(':') ? '[' + exitIP + ']' : exitIP) + ':443');
-	return { exitIP, country: code };
-}
-
-async function 读取验证TLS响应(address, expectedHostname = 出口检测主机, signal) {
-	let raw, socket, reader, timer, stage = 'connect', finished = false, rejectAbort;
-	const close = () => { try { socket?.close()?.catch(() => {}); } catch {} try { raw?.close()?.catch(() => {}); } catch {} };
-	const abort = () => { finished = true; close(); rejectAbort?.(new Error('检测已取消。')); };
-	try {
-		验证公共出口(address);
-		if (signal?.aborted) throw new Error('检测已取消。');
-		signal?.addEventListener('abort', abort, { once: true });
-		return await Promise.race([
-			(async () => {
-				const host = address.slice(0, -4).replace(/^\[|\]$/g, '');
-				raw = connect({ hostname: host, port: 443 }, { secureTransport: 'starttls' });
-				raw.closed?.catch(() => {});
-				await raw.opened;
-				if (finished || signal?.aborted) throw new Error('检测已取消。');
-				stage = 'tls'; socket = raw.startTls({ expectedServerHostname: expectedHostname });
-				socket.closed?.catch(() => {});
-				await socket.opened;
-				if (finished || signal?.aborted) throw new Error('检测已取消。');
-				const writer = socket.writable.getWriter();
-				try { await writer.write(new TextEncoder().encode(`GET /cdn-cgi/trace HTTP/1.0\r\nHost: ${出口检测主机}\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`)); }
-				finally { writer.releaseLock(); }
-				reader = socket.readable.getReader();
-				let size = 0, response = ''; const decoder = new TextDecoder();
-				for (;;) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					size += value.byteLength; if (size > 8192) throw new Error('检测响应超过限制。');
-					stage = 'response'; response += decoder.decode(value, { stream: true });
-				}
-				return response + decoder.decode();
-			})(),
-			new Promise((_, reject) => { rejectAbort = reject; timer = setTimeout(() => { finished = true; close(); reject(new Error('TLS 检测超时。')); }, 4000); })
-		]);
-	} catch (error) { error.probeStage = stage; throw error; }
-	finally {
-		finished = true; clearTimeout(timer); signal?.removeEventListener('abort', abort);
-		try { reader?.releaseLock(); } catch {} close();
-	}
-}
-
-async function 探测区域出口(address, code, signal) {
+async function 探测区域出口(address, code, signal, env, request) {
 	const controller = new AbortController(), abort = () => controller.abort();
 	const timer = setTimeout(abort, 4000); signal?.addEventListener('abort', abort, { once: true });
 	try {
 		if (signal?.aborted) controller.abort();
 		const start = performance.now();
-		const trace = 解析出口检测响应(await 读取验证TLS响应(address, 出口检测主机, controller.signal), code);
+		const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+		const receipt = await 读取候选回执(address, new URL(request.url).hostname, nonce, controller.signal);
+		const trace = await 验证出口回执(receipt, env, request, nonce, code);
 		const latency = Math.round(performance.now() - start);
-		// A reset/EOF is not evidence of certificate-name validation.
-		let rejected = false;
-		try { await 读取验证TLS响应(address, 'invalid.naiops.test', controller.signal); }
-		catch (error) {
-			if (error.probeStage === 'tls' && (error.code === 'ERR_TLS_CERT_ALTNAME_INVALID' ||
-				/hostname mismatch|certificate name mismatch|certificate.*(?:does not match|not valid for)/i.test(error.message))) rejected = true;
-		}
-		if (!rejected) throw 区域错误('证书域名反向校验未得到明确的主机名拒绝证据，拒绝启用该出口。', 503);
-		return { address, ...trace, latency, checkedAt: Date.now(), tlsNameVerified: true };
+		return { address, ...trace, latency, checkedAt: Date.now() };
 	} finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.abort(); }
 }
 
@@ -140,7 +80,7 @@ async function 发现区域候选(region, signal, failures = []) {
 async function 区域池缓存键(region, request) {
 	const material = JSON.stringify([发布版本, new URL(request.url).hostname, request.cf?.colo || 'unknown', region.code, region.exits, !!region.auto, region.source || null]);
 	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material)));
-	return 'exit-pool:v1:' + region.code + ':' + Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+	return 'exit-pool:v2:' + region.code + ':' + Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function 验证出口池(pool, code) {
@@ -153,7 +93,7 @@ function 验证出口池(pool, code) {
 	for (const item of pool.exits) {
 		验证公共出口(item.address);
 		验证公共出口((item.exitIP?.includes(':') ? '[' + item.exitIP + ']' : item.exitIP) + ':443');
-		if (item.country !== code || item.tlsNameVerified !== true || !Number.isFinite(item.latency) || item.latency < 0 || !Number.isFinite(item.checkedAt) ||
+		if (item.country !== code || item.proofVerified !== true || !Number.isFinite(item.latency) || item.latency < 0 || !Number.isFinite(item.checkedAt) ||
 			item.checkedAt <= 0 || item.checkedAt > Date.now() + 10000 || pool.expiresAt > item.checkedAt + 出口有效期)
 			throw 区域错误('出口检测缓存包含未经有效验证的结果。', 503);
 	}
@@ -189,6 +129,7 @@ async function 刷新区域出口池(env, region, request, key, entry) {
 	const failures = [], checked = [];
 	let candidates = [], cursor = Number.isInteger(old?.cursor) ? old.cursor : 0;
 	try {
+		await Promise.race([确保出口回执密钥(env), deadline]);
 		candidates = await Promise.race([发现区域候选(region, controller.signal, failures), deadline]);
 		const primary = old?.exits[0]?.address;
 		const remaining = candidates.filter(address => address !== primary);
@@ -199,7 +140,7 @@ async function 刷新区域出口池(env, region, request, key, entry) {
 		for (let offset = 0; offset < selected.length && !controller.signal.aborted; offset += 2) {
 			await Promise.race([Promise.all(selected.slice(offset, offset + 2).map(async address => {
 				try {
-					const result = await 探测区域出口(address, region.code, controller.signal);
+					const result = await 探测区域出口(address, region.code, controller.signal, env, request);
 					if (controller.signal.aborted) return;
 					验证出口池({ version: 1, region: region.code, exits: [result], failures: [], lastAttemptAt: Date.now(), expiresAt: result.checkedAt + 出口有效期, nextRefreshAt: Date.now() }, region.code);
 					checked.push(result);

@@ -2,7 +2,7 @@
 
 基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，支持 VLESS、SS 和 Mihomo/Clash Meta。默认美国，支持自动发现候选、检测真实国家与过期更新；管理员在我们的面板配置其他地区的手动候选。代理只使用所选地区的有效检测结果，全部失败断开，不直连、不跨区。
 
-**自动出口版本目前待云端验收，请勿用于替换生产版本。** 本地运行时仅用泛化连接错误表示证书域名拒绝；新代码不会把普通断线当作证书证明，因此严格检测池暂无法启用。代码测试通过不表示可上线。详见[自动出口验收记录](docs/自动出口验收.md)。
+**自动出口版本目前待云端验收，请勿用于替换生产版本。** 原生 TLS 域名参数的兼容性问题已通过本项目签名回执替代验证路径处理，受控真实 TLS 测试通过；本轮云端与真实代理仍待验收。代码测试通过不表示可上线。详见[自动出口验收记录](docs/自动出口验收.md)。
 
 [![CI](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml)
 
@@ -25,7 +25,7 @@
 
 配置单独保存到已有 KV 的 `regions.json`，不改变 ADMIN、HOST、UUID 或旧 `config.json`。未保存时默认美国；损坏配置或存储不可用时拒绝代理，不静默回落。页面提示读取错误时可以编辑并保存有效配置修复。修改地区配置不需要重新发布代码。
 
-保存地区配置只增加候选，不能直接启用出口。认证后的代理新拨号、订阅请求和管理刷新可以触发检测：固定 DNS 来源与手动候选去重，最多 32 个候选，每轮检测最多 4 个、并发 2。通过原生 TLS 获取 Cloudflare trace，实际 loc 必须匹配所选地区；证书反向校验无明确证据时拒绝启用。健康主出口优先保留，国家变化立即剔除。
+保存地区配置只增加候选，不能直接启用出口。认证后的代理新拨号、订阅请求和管理刷新可以触发检测：固定 DNS 来源与手动候选去重，最多 32 个候选，每轮检测最多 4 个、并发 2。通过候选访问当前项目的固定签名回执接口，实际国家必须匹配所选地区。签名、每次随机 nonce、域名、发布 SHA 和时效均需正确；TLS 握手或未签名国家声明不能直接启用出口。健康主出口优先保留，国家变化立即剔除。
 
 有认证请求时每 15 分钟更新，证据 30 分钟过期；无请求时暂停。临时网络故障可保留仍有效的旧证据，但不延长检测时间或到期时间。每次重新拨号与重试都会重新检查有效期，已有 TCP 连接继续。缓存独立于配置，按版本、域名、Cloudflare 边缘、地区及候选配置隔离；同一实例合并并发刷新，KV 不提供分布式锁。本分支不做全网扫描，也不保证 ChatGPT 登录成功，HTTP 403 不会触发服务器换 IP。
 
@@ -83,13 +83,13 @@ bash scripts/verify.sh
 
 自动出口版本已通过来源与生成一致性、语法检查和 15 项 Python、66 项 Node 回归，包括真实协议解析器的认证拒绝、国家变化、重试过期、缓存隔离、限流和关闭行为。Socket 边界模拟不代表真实免费出口可用性。
 
-`tests/native-tls-runtime.cjs` 使用独立 workerd 和本地 CA 夹具调用生产检测函数：正确证书返回 US trace，错误域名与不可信证书均拒绝；完整出口验证因错误信息不明确而正确失败关闭。测试仅更换 Socket 目标为受控本地服务器，不连接真实免费出口。运行方式：
+`tests/native-tls-runtime.cjs` 使用独立 workerd 和本地 TLS 1.3 服务，运行真实上游 TLS 代码与生产回执校验：正确签名美国成功，非美国、伪造、过期、旧 nonce、错误域名及版本拒绝。测试仅映射 Socket 目标，不连接真实免费出口。回执以 现有 KV 中独立随机 32 字节 HMAC 密钥认证；不依赖探测传输的证书认证，探测只发送非秘密随机值。真实客户端的目标 TLS 校验保持原样。运行方式：
 
 ```sh
 WORKERD_BINARY=/path/to/workerd node tests/native-tls-runtime.cjs /external/path/report.json
 ```
 
-报告中的 `safetyTestsPassed` 与 `runtimeReady` 必须分别检查；前者为 true 不代表后者为 true。云端必须另外验证正确/错误域名行为及真实 VLESS/SS 美国出口。Cloudflare 存在尚未关闭的 [expectedServerHostname 问题](https://github.com/cloudflare/workerd/issues/6903)，不通过时不得关闭证书验证或发布。
+报告中的 `safetyTestsPassed` 与 `runtimeReady` 必须分别检查；前者为 true 不代表后者为 true。云端必须另外验证签名回执及真实 VLESS/SS 美国出口。原生域名参数问题参考 [Cloudflare issue](https://github.com/cloudflare/workerd/issues/6903)；签名回执设计见[检测修复设计](docs/superpowers/specs/2026-10-09-cloud-exit-proof-design.md)。
 
 上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本仅在同一项目的测试预览验收：health/login/区域状态和实际 KV 保存通过，4 个候选原生 TLS 握手均失败，VLESS/SS 连接随后关闭；生产版本与域名已复核保持原版本。现有授权已恢复，浏览器会话检查仍超时。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
 

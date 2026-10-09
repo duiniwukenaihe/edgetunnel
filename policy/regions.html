@@ -7,7 +7,7 @@
 </style>
 <main>
 <header><h1>区域配置</h1><p>默认使用美国，自动发现候选并验证实际出口国家。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href="/admin/settings">原有设置</a><a href="/logout">退出登录</a></nav></header>
-<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><button type="button" id="add">添加地区</button><p class="hint">手动候选填写公共 IP:443 或 [IPv6]:443，每区最多 8 个。保存后仍须通过国家和证书检测才能使用。旧配置保持手动模式，可在美国地区启用自动发现。</p></section>
+<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><button type="button" id="add">添加地区</button><p class="hint">手动候选填写公共 IP:443 或 [IPv6]:443，每区最多 8 个。保存后仍须通过国家和签名回执检测才能使用。旧配置保持手动模式，可在美国地区启用自动发现。</p></section>
 <div class="actions"><button id="save" type="submit" disabled>保存配置</button><button id="reload" type="button">重新读取</button><div id="status" role="status" aria-live="polite">正在读取配置…</div></div></form>
 <section id="links" hidden><h2>客户端订阅</h2><p class="hint">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；通用客户端按其自身功能选节点。保存后更新客户端订阅。</p><label>订阅范围<select id="scope"><option value="">全部已配置地区</option></select></label><div id="addresses"></div></section>
 <section><h2>出口检测</h2><label>查看地区<select id="poolRegion"></select></label><button type="button" id="poolRead">读取状态</button><button type="button" id="poolRefresh">立即检测并刷新</button><p class="hint">显示当前访问边缘的检测结果。有认证请求时每 15 分钟更新，30 分钟后过期；无请求时暂停更新。保留健康主出口，刷新不能保证 ChatGPT 登录成功。</p><div id="poolStatus" role="status" aria-live="polite">请先读取区域配置。</div><div id="poolDetails"></div></section>
