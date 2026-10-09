@@ -2,7 +2,7 @@
 
 基于 [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) 的 Cloudflare Pages 分支，支持 VLESS、SS 和 Mihomo/Clash Meta。默认美国，支持自动发现候选、检测真实国家与过期更新；默认自动发现美国、日本、新加坡、香港、德国、英国候选，用户只选择地区，无需维护 IP。代理只使用所选地区的有效检测结果，全部失败断开，不直连、不跨区。
 
-**美国检测修复已通过预览的真实回执及 VLESS/SS 美国出口验收；多地区版本仍待新预览验收，尚未替换生产。** 检测以本项目签名回执认证观测国家。详见[自动出口验收记录](docs/自动出口验收.md)。
+**六地区预览均通过云端国家检测与 VLESS/SS 共 12 项真实代理验收。** 当前正式部署版本请以 `/healthz` 的 revision 为准。 检测以本项目签名回执认证观测国家。详见[自动出口验收记录](docs/自动出口验收.md)。
 
 [![CI](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/duiniwukenaihe/edgetunnel/actions/workflows/ci.yml)
 
