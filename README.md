@@ -91,7 +91,7 @@ WORKERD_BINARY=/path/to/workerd node tests/native-tls-runtime.cjs /external/path
 
 报告中的 `safetyTestsPassed` 与 `runtimeReady` 必须分别检查；前者为 true 不代表后者为 true。云端必须另外验证正确/错误域名行为及真实 VLESS/SS 美国出口。Cloudflare 存在尚未关闭的 [expectedServerHostname 问题](https://github.com/cloudflare/workerd/issues/6903)，不通过时不得关闭证书验证或发布。
 
-上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本未上线；现有授权已恢复，同一项目的测试预览已验证 health/login/区域状态，但出口刷新未通过；浏览器会话检查仍超时。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
+上次线上核对记录为固定美国版本 `9efa77852427d5fed7e3aba2cef9b089337dc956`，此次自动版本仅在同一项目的测试预览验收：health/login/区域状态和实际 KV 保存通过，4 个候选原生 TLS 握手均失败，VLESS/SS 连接随后关闭；生产版本与域名已复核保持原版本。现有授权已恢复，浏览器会话检查仍超时。本次页面浏览器验收、真实客户端切换及 ChatGPT 账号登录均未完成。
 
 ## 来源与许可证
 
