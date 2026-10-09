@@ -56,5 +56,9 @@
 - [x] Document nine entries, 18 Mihomo protocol proxies, shared US pool, state mapping, request-driven updates, approximate/null geolocation, and unchanged country links. No promise of enough free candidates per subregion.
 - [x] Run python3 scripts/apply-us-policy.py upstream/_worker.js _worker.js then bash scripts/verify.sh. Full regression is existing lightweight tests, not dependency install or compilation. Preserve RED/GREEN evidence outside repo.
 - [x] Independent whole-branch review of source diff and test results; fix any important findings before completion.
-- [ ] Root stages only source/tests/docs/generated worker, commits, pushes feature branch and creates PR attached to task. Confirm GitHub CI. No Cloudflare production deploy.
-- [ ] Record final revision, test summary, CI/PR, limitations and resource cleanup. Keep formal verification evidence and remove only owned regenerable scratch/processes.
+- [x] Root stages only source/tests/docs/generated worker, commits, pushes feature branch and creates PR attached to task. Confirm GitHub CI. No Cloudflare production deploy.
+- [x] Record final revision, test summary, CI/PR, limitations and resource cleanup. Keep formal verification evidence and remove only owned regenerable scratch/processes.
+
+## Final evidence
+
+Implementation revision `1bc41447ea70b074b716e003315344aae60a99b4`; generated worker SHA256 `5eea6333d29ffda54aa4fa2eaac1944847fcf13b5f2ef5823db59488668b3919`. Full regression 109 Node / 15 Python PASS; native workerd 11 cases PASS, source matches, runtime ready, exit 0, temporary data cleaned. Backend, UI and whole-branch independent review PASS after explicit corrupt-config repair. PR #7 attached; CI passed on documentation revision `a6f7574`. Local existing Chrome desktop/narrow fixture checked; test tab closed, bounds restored, owned fixture servers stopped. Evidence retained externally (about 2.8 MiB), no dependency install/worktree; available disk remains about 14 GiB. Production, real clients and ChatGPT acceptance remain NOT_RUN.
