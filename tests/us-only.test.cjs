@@ -60,7 +60,7 @@ test('environment concurrency cannot race the backup against the primary', async
 async function subscribe(target, protocol, addressList = 'us.naiops.ccwu.cc:443#美国入口') {
   const s = load(); const external = [];
   s.fetch = async url => { external.push(url); throw new Error('external request forbidden'); };
-  const store = new Map([['ADD.txt', addressList]]);
+  const store = new Map([['ADD.txt', addressList], ['regions.json', JSON.stringify({version:1,defaultRegion:'US',regions:[{code:'US',name:'美国',exits:POOL.map(ip=>ip+':443')}]})]]);
   const env = { ADMIN: 'unit-test-only', UUID, OFF_LOG: 'true', KV: {
     get: async key => store.get(key) || null, put: async (key, value) => store.set(key, value) } };
   const token = await s.MD5MD5('us.naiops.ccwu.cc' + UUID);

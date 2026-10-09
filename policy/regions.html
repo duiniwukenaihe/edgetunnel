@@ -6,15 +6,16 @@
 *{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#172332;font:16px/1.6 system-ui,sans-serif}main{max-width:980px;margin:32px auto;padding:0 20px}header,section{background:white;border:1px solid #dce3eb;border-radius:12px;padding:22px;margin-bottom:18px}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 12px;font-size:20px}a{color:#175ac6}label{display:block;font-weight:600}input,textarea,select{width:100%;font:inherit;border:1px solid #b5c1ce;border-radius:6px;padding:8px;margin:4px 0 12px}textarea{min-height:100px;resize:vertical}button{font:inherit;border:0;border-radius:6px;padding:9px 15px;background:#175ac6;color:white;cursor:pointer;margin-right:8px}button:disabled{opacity:.5;cursor:wait}.remove{background:#fff1f1;color:#a32222}.row{display:grid;grid-template-columns:140px 1fr;gap:16px}.hint{color:#526172;font-size:14px}#status{white-space:pre-wrap;min-height:26px}.error{color:#a32222}.success{color:#14683b}#links input{font:13px/1.6 monospace}.actions{position:sticky;bottom:0;background:#f4f6fa;padding:12px 0}.region{border-top:1px solid #e5eaf0;padding-top:16px;margin-top:16px}nav{display:flex;gap:20px;margin-top:12px}@media(max-width:600px){.row{grid-template-columns:1fr;gap:0}main{padding:0 12px}}
 </style>
 <main>
-<header><h1>区域配置</h1><p>默认使用美国。添加你已验证的地区出口，客户端只在所选地区内切换；全部失败会断开。</p><nav><a href="/admin/settings">原有设置</a><a href="/logout">退出登录</a></nav></header>
-<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><button type="button" id="add">添加地区</button><p class="hint">出口按顺序逐行填写 IP:端口，IPv6 使用 [IPv6]:端口。每区最多 8 个，先填主出口，再填备用。保存不验证国家或 ChatGPT 可用性，请先通过实际代理连接检查。</p></section>
+<header><h1>区域配置</h1><p>默认使用美国，自动发现候选并验证实际出口国家。客户端只在所选地区内切换；没有有效出口时断开。</p><nav><a href="/admin/settings">原有设置</a><a href="/logout">退出登录</a></nav></header>
+<form id="form"><section><h2>地区与出口</h2><label>默认地区<select id="defaultRegion" required></select></label><div id="regions"></div><button type="button" id="add">添加地区</button><p class="hint">手动候选填写公共 IP:443 或 [IPv6]:443，每区最多 8 个。保存后仍须通过国家和证书检测才能使用。旧配置保持手动模式，可在美国地区启用自动发现。</p></section>
 <div class="actions"><button id="save" type="submit" disabled>保存配置</button><button id="reload" type="button">重新读取</button><div id="status" role="status" aria-live="polite">正在读取配置…</div></div></form>
 <section id="links" hidden><h2>客户端订阅</h2><p class="hint">订阅地址含私密凭据，请勿公开。Mihomo 可在“地区选择”中选择已配置地区；通用客户端按其自身功能选节点。保存后更新客户端订阅。</p><label>订阅范围<select id="scope"><option value="">全部已配置地区</option></select></label><div id="addresses"></div></section>
+<section><h2>出口检测</h2><label>查看地区<select id="poolRegion"></select></label><button type="button" id="poolRead">读取状态</button><button type="button" id="poolRefresh">立即检测并刷新</button><p class="hint">显示当前访问边缘的检测结果。有认证请求时每 15 分钟更新，30 分钟后过期；无请求时暂停更新。保留健康主出口，刷新不能保证 ChatGPT 登录成功。</p><div id="poolStatus" role="status" aria-live="polite">请先读取区域配置。</div><div id="poolDetails"></div></section>
 </main>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-let subscriptions={}, loading=false;
+let subscriptions={}, loading=false, poolLoading=false;
 function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'success';}
 function regionRows(){return [...document.querySelectorAll('.region')];}
 function updateDefaults(selected=$('defaultRegion').value){
@@ -24,9 +25,12 @@ function updateDefaults(selected=$('defaultRegion').value){
 }
 function addRegion(region={code:'',name:'',exits:[]}){
  const row=document.createElement('div');row.className='region';
- row.innerHTML='<div class="row"><label>地区代码<input class="code" maxlength="2" pattern="[A-Z]{2}" placeholder="US" required></label><label>地区名称<input class="name" maxlength="32" placeholder="美国" required></label></div><label>出口（每行一个，按主备顺序）<textarea class="exits" placeholder="IP:端口" required></textarea></label><button type="button" class="remove">删除地区</button>';
+ row.innerHTML='<div class="row"><label>地区代码<input class="code" maxlength="2" pattern="[A-Z]{2}" placeholder="US" required></label><label>地区名称<input class="name" maxlength="32" placeholder="美国" required></label></div><label>自动发现<select class="auto"><option value="false">关闭 · 手动候选</option><option value="true">开启 · 美国来源</option></select></label><p class="hint source"></p><label>手动候选（每行一个，按主备顺序）<textarea class="exits" placeholder="公共 IP:443"></textarea></label><button type="button" class="remove">删除地区</button>';
  row.querySelector('.code').value=region.code;row.querySelector('.name').value=region.name;row.querySelector('.exits').value=region.exits.join('\n');
- row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();updateDefaults();});
+ row.querySelector('.auto').value=String(!!region.auto);
+ const autoState=()=>{const us=row.querySelector('.code').value==='US';const auto=row.querySelector('.auto');auto.options[1].disabled=!us;if(!us)auto.value='false';row.querySelector('.exits').required=auto.value!=='true';row.querySelector('.source').textContent=auto.value==='true'?'自动来源：proxyip.us.cmliussss.net（候选仍须实测为美国）':'手动候选也会验证实际出口国家。';};
+ row.querySelector('.auto').onchange=autoState;autoState();
+ row.querySelector('.code').addEventListener('input',event=>{event.target.value=event.target.value.toUpperCase();autoState();updateDefaults();});
  row.querySelector('.name').addEventListener('input',()=>updateDefaults());
  row.querySelector('.remove').onclick=()=>{if(regionRows().length===1){status('至少保留一个地区。',true);return;}row.remove();updateDefaults();};
  $('regions').append(row);updateDefaults();
@@ -35,6 +39,7 @@ function showLinks(config){
  const scope=$('scope');const selected=scope.value;scope.replaceChildren(new Option('全部已配置地区',''));
  for(const region of config.regions)scope.append(new Option(region.code+' · '+region.name,region.code));
  if(config.regions.some(r=>r.code===selected))scope.value=selected;
+ const pool=$('poolRegion');const previous=pool.value;pool.replaceChildren();for(const region of config.regions)pool.append(new Option(region.code+' · '+region.name,region.code));pool.value=config.regions.some(r=>r.code===previous)?previous:config.defaultRegion;
  $('links').hidden=false;renderLinks();
 }
 function renderLinks(){
@@ -49,15 +54,32 @@ function renderLinks(){
 async function api(options){const response=await fetch('/admin/regions.json',options);if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败。');return data;}
 async function read(){
  if(loading)return;loading=true;$('save').disabled=true;status('正在读取配置…');
- try{const data=await api();subscriptions=data.subscriptions;$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');}
- catch(error){status(error.message,true);if(!regionRows().length){addRegion({code:'US',name:'美国',exits:['3.132.174.45:443','192.3.208.192:443']});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}
+ try{const data=await api();subscriptions=data.subscriptions;$('regions').replaceChildren();for(const region of data.config.regions)addRegion(region);updateDefaults(data.config.defaultRegion);showLinks(data.config);status('已读取配置。');await readPool();}
+ catch(error){status(error.message,true);if(!regionRows().length){addRegion({code:'US',name:'美国',exits:[],auto:true});status(error.message+' 可编辑下方配置并保存修复；未保存前不会启用。',true);}}
  finally{loading=false;$('save').disabled=false;}
 }
 $('form').onsubmit=async event=>{
  event.preventDefault();if(loading)return;loading=true;$('save').disabled=true;
- const config={version:1,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)}))};
+ const config={version:2,defaultRegion:$('defaultRegion').value,regions:regionRows().map(row=>({code:row.querySelector('.code').value.trim(),name:row.querySelector('.name').value.trim(),exits:row.querySelector('.exits').value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),auto:row.querySelector('.auto').value==='true',source:row.querySelector('.auto').value==='true'?'cmliu-us-dns':null}))};
  status('正在保存…');try{const saved=await api({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});if(Object.keys(subscriptions).length)showLinks(saved.config);status(saved.message);}catch(error){status(error.message,true);}finally{loading=false;$('save').disabled=false;}
 };
+async function readPool(force=false){
+ if(poolLoading||!$('poolRegion').value)return;poolLoading=true;$('poolRead').disabled=true;$('poolRefresh').disabled=true;$('poolStatus').className='';$('poolStatus').textContent=force?'正在发现和检测出口…':'正在读取状态…';
+ const address='/admin/exits.json?region='+encodeURIComponent($('poolRegion').value);
+ try{
+  const response=await fetch(address,force?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:undefined);
+  if(response.redirected){location.assign('/login');throw new Error('请重新登录。');}
+  const data=await response.json();if(!response.ok&&!data.pool)throw new Error(data.error||'出口状态读取失败。');
+  $('poolStatus').className=data.available?'success':'error';$('poolStatus').textContent=data.error||(data.region+' · 边缘 '+data.colo+' · '+(data.available?'有有效出口':'暂无有效出口'));$('poolDetails').replaceChildren();
+  const date=value=>new Date(value).toLocaleString();
+  if(data.pool){const summary=document.createElement('p');summary.className='hint';summary.textContent='最近检测：'+date(data.pool.lastAttemptAt)+'；过期：'+date(data.pool.expiresAt);$('poolDetails').append(summary);
+   for(const [index,item] of data.pool.exits.entries()){const line=document.createElement('p');line.style.overflowWrap='anywhere';line.textContent=(index===0?'主出口':'备用')+' '+item.address+' → '+item.exitIP+' · '+item.country+' · '+item.latency+' ms · '+date(item.checkedAt);$('poolDetails').append(line);}
+   for(const failure of data.pool.failures){const line=document.createElement('p');line.className='hint';line.style.overflowWrap='anywhere';line.textContent=failure.address+'：'+failure.reason;$('poolDetails').append(line);}
+  }else $('poolDetails').textContent='尚未检测，请点击立即检测并刷新。';
+ }catch(error){$('poolStatus').className='error';$('poolStatus').textContent=error.message;$('poolDetails').replaceChildren();}
+ finally{poolLoading=false;$('poolRead').disabled=false;$('poolRefresh').disabled=false;}
+}
+$('poolRead').onclick=()=>readPool();$('poolRefresh').onclick=async()=>{await readPool(true);};$('poolRegion').onchange=()=>readPool();
 $('add').onclick=()=>addRegion();$('reload').onclick=read;$('scope').onchange=renderLinks;read();
 </script>
 </html>

@@ -1,6 +1,6 @@
 function 默认区域配置() {
-	return { version: 1, defaultRegion: 'US', regions: [
-		{ code: 'US', name: '美国', exits: 美国出口.split(',') }
+	return { version: 2, defaultRegion: 'US', regions: [
+		{ code: 'US', name: '美国', exits: 美国出口.split(','), auto: true, source: 'cmliu-us-dns' }
 	] };
 }
 
@@ -14,8 +14,8 @@ function 区域错误响应(error) {
 }
 
 function 验证区域配置(input) {
-	if (!input || input.version !== 1 || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
-		throw 区域错误('需要 1–16 个区域，配置版本必须为 1。');
+	if (!input || ![1, 2].includes(input.version) || !Array.isArray(input.regions) || input.regions.length < 1 || input.regions.length > 16)
+		throw 区域错误('需要 1–16 个区域，配置版本必须为 1 或 2。');
 	const codes = new Set(), names = new Set();
 	const regions = input.regions.map(region => {
 		if (!region || typeof region.code !== 'string' || !/^[A-Z]{2}$/.test(region.code) || codes.has(region.code))
@@ -23,27 +23,18 @@ function 验证区域配置(input) {
 		const name = typeof region.name === 'string' ? region.name.trim() : '';
 		if (!name || name.length > 32 || /[\x00-\x1f\x7f]/.test(name) || names.has(name))
 			throw 区域错误('区域名称须唯一、非空且不超过 32 字符。');
-		if (!Array.isArray(region.exits) || region.exits.length < 1 || region.exits.length > 8)
-			throw 区域错误('每区需要 1–8 个有序出口。');
-		const exits = region.exits.map(exit => {
-			const match = typeof exit === 'string' && exit.trim().match(/^(\[[0-9a-fA-F:.]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/);
-			if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535)
-				throw 区域错误('出口须为 IPv4:端口 或 [IPv6]:端口，端口为 1–65535。');
-			let hostname = match[1];
-			if (hostname.startsWith('[')) {
-				try { hostname = new URL('http://' + hostname + '/').hostname; }
-				catch { throw 区域错误('IPv6 地址无效。'); }
-			} else if (!hostname.split('.').every(part => Number(part) <= 255 && String(Number(part)) === part)) {
-				throw 区域错误('IPv4 地址无效。');
-			}
-			return hostname + ':' + Number(match[2]);
-		});
+		const auto = input.version === 1 ? false : region.auto;
+		if (typeof auto !== 'boolean' || (auto && (region.code !== 'US' || region.source !== 'cmliu-us-dns')) ||
+			(!auto && input.version === 2 && region.source !== null)) throw 区域错误('目前仅美国支持自动来源；手动区域的 source 必须为空。');
+		if (!Array.isArray(region.exits) || region.exits.length < (auto ? 0 : 1) || region.exits.length > 8)
+			throw 区域错误('每区最多 8 个手动候选；未启用自动来源时至少填写一个。');
+		const exits = region.exits.map(exit => 验证公共出口(typeof exit === 'string' ? exit.trim() : exit));
 		if (new Set(exits).size !== exits.length) throw 区域错误('同一区域的出口不能重复。');
 		codes.add(region.code); names.add(name);
-		return { code: region.code, name, exits };
+		return { code: region.code, name, exits, auto, source: auto ? region.source : null };
 	});
 	if (!codes.has(input.defaultRegion)) throw 区域错误('默认区域必须在已配置区域中。');
-	return { version: 1, defaultRegion: input.defaultRegion, regions };
+	return { version: 2, defaultRegion: input.defaultRegion, regions };
 }
 
 async function 读取区域配置(env) {
@@ -107,16 +98,39 @@ function 生成区域Clash订阅(config, regions = 默认区域配置(), selecte
 		rules: ['MATCH,地区选择'] }, null, 2);
 }
 
-async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env) {
+async function 反代参数获取(url, uuid, 默认反代IP = '', 默认反代兜底 = true, env, request) {
 	// 旧签名仍用于独立策略调用；所有真实代理入口明确传入 env。
 	const config = env === undefined ? 默认区域配置() : await 读取区域配置(env);
 	const region = 选择区域(config, url);
 	return { 木马反代地址: null, 反代IP: region.exits.join(','), 代理类型: 'proxyip',
-		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false };
+		代理账号: '', 代理全局: true, 代理参数: {}, 反代兜底: false,
+		获取验证出口: env === undefined ? null : () => 获取有效区域池(env, region, request || new Request(url.href)) };
 }
 
 async function 处理区域管理(request, env, url, host, uuid) {
 	const headers = { 'Cache-Control': 'no-store' };
+	if (request.method === 'POST' && (request.headers.get('Origin') !== url.origin ||
+		!/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || '')))
+		return 区域错误响应(区域错误('保存或刷新需要同源 JSON 请求。', 403));
+	if (url.pathname === '/admin/exits.json') {
+		if (!['GET', 'POST'].includes(request.method)) return new Response('仅支持 GET 或 POST。', { status: 405, headers });
+		try {
+			const region = 选择区域(await 读取区域配置(env), url);
+			let refreshError;
+			if (request.method === 'POST') {
+				let body;
+				try { body = await request.json(); } catch { throw 区域错误('JSON 格式无效。'); }
+				if (!body || Array.isArray(body) || Object.keys(body).length) throw 区域错误('刷新请求须为空 JSON 对象。');
+				try { await 获取有效区域池(env, region, request, true); }
+				catch (error) { if (error.status !== 503) throw error; refreshError = error; }
+			}
+			const { entry } = await 读取出口池状态(env, region, request);
+			return Response.json({ region: region.code, colo: request.cf?.colo || 'unknown', pool: entry.pool,
+				...(refreshError ? { error: refreshError.message } : {}),
+				available: !!entry.pool?.exits.length && entry.pool.expiresAt > Date.now(),
+				refreshSeconds: 900, expirySeconds: 1800 }, { status: refreshError ? 503 : 200, headers });
+		} catch (error) { return 区域错误响应(error); }
+	}
 	if (url.pathname === '/admin/regions') {
 		if (request.method !== 'GET') return new Response('仅支持 GET。', { status: 405, headers });
 		return new Response(区域管理页面, { headers: { ...headers, 'Content-Type': 'text/html;charset=utf-8',
@@ -124,8 +138,6 @@ async function 处理区域管理(request, env, url, host, uuid) {
 			'X-Content-Type-Options': 'nosniff' } });
 	}
 	if (request.method === 'POST') {
-		if (request.headers.get('Origin') !== url.origin || !/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || ''))
-			return 区域错误响应(区域错误('保存需要同源 JSON 请求。', 403));
 		let config;
 		try { config = 验证区域配置(await request.json()); }
 		catch (error) { return 区域错误响应(区域错误(error instanceof SyntaxError ? 'JSON 格式无效。' : error.message)); }

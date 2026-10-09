@@ -1,10 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { load, socket, UUID, POOL } = require('./helpers/worker.cjs');
+const { load, socket, UUID, POOL, seedVerifiedPool } = require('./helpers/worker.cjs');
 const ORIGIN = 'https://us.naiops.ccwu.cc';
 const regions = () => ({ version: 1, defaultRegion: 'US', regions: [
   { code: 'US', name: '美国', exits: POOL.map(ip => ip + ':443') },
-  { code: 'JP', name: '日本', exits: ['198.51.100.1:443', '198.51.100.2:443'] }
+  { code: 'JP', name: '日本', exits: ['8.8.8.8:443', '9.9.9.9:443'] }
 ] });
 function storage(config) {
   const store = new Map(config === undefined ? [] : [['regions.json', JSON.stringify(config)]]);
@@ -40,7 +40,7 @@ test('real proxy endpoint selects configured JP and ignores arbitrary overrides'
   const response = await s.worker.fetch(req, env, {});
   assert.equal(response.status, 200);
   const context = await response.json();
-  assert.equal(context.反代IP, '198.51.100.1:443,198.51.100.2:443');
+  assert.equal(context.反代IP, '8.8.8.8:443,9.9.9.9:443');
   assert.equal(context.反代兜底, false);
   assert.equal(context.代理全局, true);
 });
@@ -71,18 +71,19 @@ test('concurrent selected regions keep independent proxy contexts', async () => 
   const contexts = await Promise.all(['US', 'JP', 'US', 'JP'].map(region =>
     s.反代参数获取(new URL(ORIGIN + '/?region=' + region), UUID, '', true, env)));
   assert.deepEqual(contexts.map(c => c.反代IP), [POOL.map(ip => ip + ':443').join(','),
-    '198.51.100.1:443,198.51.100.2:443', POOL.map(ip => ip + ':443').join(','), '198.51.100.1:443,198.51.100.2:443']);
+    '8.8.8.8:443,9.9.9.9:443', POOL.map(ip => ip + ':443').join(','), '8.8.8.8:443,9.9.9.9:443']);
 });
 test('JP backup is tried in order, all JP failures never try US or direct', async () => {
-  for (const failures of [['198.51.100.1'], ['198.51.100.1', '198.51.100.2']]) {
+  for (const failures of [['8.8.8.8'], ['8.8.8.8', '9.9.9.9']]) {
     const attempts = []; const s = load(({ hostname }) => { attempts.push(hostname); return socket(hostname, failures.includes(hostname)); });
     const { env } = storage(regions());
+    await seedVerifiedPool(s, env, await s.读取区域配置(env), new Request(ORIGIN));
     const context = await s.反代参数获取(new URL(ORIGIN + '/?region=JP'), UUID, '', true, env);
     const ws = { readyState: 1, close() { this.readyState = 3; } };
     const result = s.forwardataTCP('chatgpt.com', 443, new Uint8Array([1]), ws, null, {}, UUID, {}, context, false, null, true);
     if (failures.length === 2) { await assert.rejects(result, /所有反代连接失败/); assert.equal(ws.readyState, 3); }
-    else assert.equal((await result).hostname, '198.51.100.2');
-    assert.deepEqual(attempts, ['198.51.100.1', '198.51.100.2']);
+    else assert.equal((await result).hostname, '9.9.9.9');
+    assert.deepEqual(attempts, ['8.8.8.8', '9.9.9.9']);
   }
 });
 test('regional admin endpoints require the existing login cookie', async () => {

@@ -13,7 +13,7 @@ function load(connect = () => { throw new Error('unexpected TCP'); }) {
         ? Promise.resolve(Uint8Array.from(createHash('md5').update(Buffer.from(data)).digest()).buffer)
         : target.digest(algorithm, data); const value = target[name]; return typeof value === 'function' ? value.bind(target) : value; }
     }) }, performance, ReadableStream, WritableStream, TransformStream,
-    setTimeout, clearTimeout, atob, btoa, connect, WebSocket: { OPEN: 1, CLOSING: 2, CLOSED: 3 } };
+    setTimeout, clearTimeout, AbortController, AbortSignal, atob, btoa, connect, WebSocket: { OPEN: 1, CLOSING: 2, CLOSED: 3 } };
   vm.createContext(sandbox);
   const source = readFileSync(SOURCE, 'utf8').replace(/^\s*import \{ connect \} from ['"]cloudflare:sockets['"];?\s*/m, '')
     .replace('export default {', 'const worker = {');
@@ -25,4 +25,15 @@ function socket(hostname, unavailable) {
     closed: Promise.resolve(), close() {}, writable: new WritableStream({ write() {} }) };
 }
 
-module.exports = { load, socket, UUID, POOL };
+// Explicit fixture cache for routing tests; network verification has separate native-TLS tests.
+async function seedVerifiedPool(s, env, config, request) {
+  for (const region of config.regions) {
+    const now = Date.now();
+    const pool = {version:1,region:region.code,exits:region.exits.map(address => ({address,
+      exitIP:address.slice(0,-4).replace(/^\[|\]$/g,''),country:region.code,checkedAt:now,latency:5,tlsNameVerified:true})),
+      failures:[],cursor:0,lastAttemptAt:now,nextRefreshAt:now+900000,expiresAt:now+1800000};
+    await env.KV.put(await s.区域池缓存键(region, request), JSON.stringify(pool));
+  }
+}
+
+module.exports = { load, socket, UUID, POOL, seedVerifiedPool };
